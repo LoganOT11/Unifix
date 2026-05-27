@@ -757,7 +757,6 @@ class TestBoundaryConditions:
             "diagnosis_cause": "test",
             "work_performed": "test",
             "parts_used": "BLT-SERP",
-            "start_time": "08:00",
             "end_time": "11:00",
             "total_time_spent": "3h 0m",
             "future_recommendations": "test",

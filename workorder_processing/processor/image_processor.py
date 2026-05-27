@@ -6,9 +6,9 @@ import os
 from pathlib import Path
 
 from google.genai import types
-from .gemini_client import call_gemini_with_retry, create_client
+from .gemini_client import call_gemini_generic, create_client
 from .image_preprocessor import preprocess_image
-from .parser import parse_ai_json
+from .parser import parse_ai_json, extract_confidence_markers
 
 ALLOWED_IMAGE_MIMES = {
     "image/jpeg", "image/jpg", "image/png",
@@ -73,8 +73,11 @@ def detect_image_mime(file_path: str) -> str:
     return _EXT_MIME.get(ext, "image/jpeg")
 
 
-def validate_image_file(file_path: str) -> dict:
+def validate_image_file(file_path: str, safe_root: str | None = None) -> dict:
     path = Path(file_path).resolve()
+    root = Path(safe_root).resolve() if safe_root else Path.cwd()
+    if not str(path).startswith(str(root)):
+        raise ValueError(f"Path traversal detected: {file_path!r} resolves outside {root}")
     if not path.exists():
         raise FileNotFoundError(f"Image file not found: {file_path}")
     size = path.stat().st_size
@@ -91,26 +94,29 @@ def process_image(
     client,
     model_id: str,
     preprocess: bool = True,
-) -> tuple[dict, dict, object]:
+) -> tuple[dict, dict, object, object]:
     """
     Process a handwritten work order image through Gemini Vision.
 
     Returns:
-        (work_order_dict, confidence_markers, raw_response)
+        (work_order_dict, confidence_markers, raw_response, preprocess_result)
+        preprocess_result is None if preprocessing was skipped (PDF or preprocess=False).
     """
     meta = validate_image_file(file_path)
     image_bytes = Path(file_path).read_bytes()
     mime_type = meta["mime_type"]
 
+    preprocess_result = None
     if preprocess and mime_type != "application/pdf":
-        pre_result = preprocess_image(image_bytes, mime_type)
-        image_bytes = pre_result.image_bytes
-        mime_type = pre_result.mime_type
+        preprocess_result = preprocess_image(image_bytes, mime_type)
+        image_bytes = preprocess_result.image_bytes
+        mime_type = preprocess_result.mime_type
 
     image_part = types.Part.from_bytes(data=image_bytes, mime_type=mime_type)
 
-    response = client.models.generate_content(
-        model=model_id,
+    response = call_gemini_generic(
+        client=client,
+        model_id=model_id,
         contents=[image_part, IMAGE_EXTRACTION_PROMPT],
         config=types.GenerateContentConfig(
             response_mime_type="application/json",
@@ -119,20 +125,5 @@ def process_image(
     )
 
     raw_json = parse_ai_json(response.text)
-    work_order, confidences = _split_confidence_markers(raw_json)
-    return work_order, confidences, response
-
-
-def _split_confidence_markers(raw_json: dict) -> tuple[dict, dict]:
-    """Split __confidence keys from work order fields."""
-    FUZZY_FIELDS = {"worker", "company", "location", "vehicle_equipment", "parts_used"}
-    work_order: dict = {}
-    confidences: dict = {}
-    for key, value in raw_json.items():
-        if key.endswith("__confidence"):
-            confidences[key.replace("__confidence", "")] = str(value).upper()
-        else:
-            work_order[key] = value
-    for f in FUZZY_FIELDS:
-        confidences.setdefault(f, "MEDIUM")
-    return work_order, confidences
+    work_order, confidences = extract_confidence_markers(raw_json)
+    return work_order, confidences, response, preprocess_result

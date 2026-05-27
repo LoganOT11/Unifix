@@ -10,6 +10,7 @@ from .exceptions import APICallError
 logger = logging.getLogger("work_order_processor")
 
 VERACITY_TRIGGER_STATUSES = {"REVIEW", "FAIL"}
+VERACITY_TRIGGER_CONFIDENCE = {"LOW"}
 
 VERACITY_PROMPT = """<system_role>
 You are a quality-assurance reviewer for mechanical work order data extraction.
@@ -66,7 +67,7 @@ def should_run_veracity(
 ) -> bool:
     if validation_result.overall_status.value in VERACITY_TRIGGER_STATUSES:
         return True
-    if any(v == "LOW" for v in gemini_confidences.values()):
+    if any(v in VERACITY_TRIGGER_CONFIDENCE for v in gemini_confidences.values()):
         return True
     return False
 
@@ -77,13 +78,15 @@ def run_veracity_check(
     audio_bytes: bytes,
     mime_type: str,
     first_pass_json: dict,
+    first_pass_transcript: str | None = None,
 ) -> dict:
     """
     Send original audio + first-pass JSON back to Gemini for verification.
     Returns the parsed veracity result dict, or empty dict on parse failure.
     """
+    transcript_text = first_pass_transcript if first_pass_transcript else "[See attached audio]"
     prompt = VERACITY_PROMPT.format(
-        source_transcript="[See attached audio]",
+        source_transcript=transcript_text,
         first_pass_json=json.dumps(first_pass_json, indent=2),
     )
 

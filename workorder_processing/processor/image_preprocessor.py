@@ -100,7 +100,10 @@ def preprocess_image(image_bytes: bytes, mime_type: str) -> PreprocessResult:
     quality = assess_quality(img)
     ops: list[str] = []
 
+    width_before = img.shape[1]
     img = upscale_if_small(img)
+    if img.shape[1] != width_before:
+        ops.append(f"upscale_if_small ({width_before}→{img.shape[1]}px wide)")
 
     if quality in (ImageQuality.FAIR, ImageQuality.POOR):
         img, angle = deskew(img)

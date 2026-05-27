@@ -50,9 +50,11 @@ Unifix/
 │   │   ├── resolution.py         ← PASS / REVIEW / FAIL aggregation
 │   │   └── work_order_validator.py ← Orchestrator: validate_work_order()
 │   ├── tests/
-│   │   ├── conftest.py           ← sys.path fix for pytest
-│   │   ├── test_fuzzy_resolver.py ← 68 tests (workers, companies, locations, equipment, parts, time)
-│   │   └── test_edge_cases.py    ← 159 tests (12 categories: whitespace, typos, ambiguity, injection, etc.)
+│   │   ├── conftest.py               ← sys.path fix for pytest
+│   │   ├── test_fuzzy_resolver.py    ← 68 tests (workers, companies, locations, equipment, parts, time)
+│   │   ├── test_edge_cases.py        ← 159 tests (12 categories: whitespace, typos, ambiguity, injection, etc.)
+│   │   ├── test_veracity.py          ← 24 tests (should_run_veracity, apply_corrections, run_check)
+│   │   └── test_image_processing.py  ← 36 tests (assess_quality, preprocess, validate_image_file, process_image)
 │   ├── audio/
 │   │   └── test_audio.wav        ← Sample audio for testing
 │   ├── test_database/
@@ -70,28 +72,31 @@ Unifix/
 
 ```bash
 cd workorder_processing
-python main.py audio/test_audio.wav
-python main.py audio/test_audio.wav -o outputs/ -p   # with output dir + plaintext sidecar
+python main.py audio/test_audio.wav                         # audio (default)
+python main.py form.jpg --mode image                        # image
+python main.py audio/test_audio.wav -o outputs/ -p         # with output dir + plaintext sidecar
 ```
 
 ### Pipeline
 
-1. **Validate** — Path traversal guard, file existence, filename safety, extension allowlist,
-   size bounds (1 KB–200 MB), magic-byte MIME sniffing.
-2. **Call Gemini (Pass 1)** — Audio sent inline with `SCHEMA_PROMPT_V2`. The improved prompt
-   includes field definitions, extraction rules, and requests `__confidence` markers for the
-   5 fuzzy fields (`worker`, `company`, `location`, `vehicle_equipment`, `parts_used`).
-   3-attempt exponential backoff on 429/5xx.
+1. **Validate** — Path traversal guard (`safe_root` check), file existence, filename safety,
+   extension allowlist, size bounds, magic-byte MIME sniffing. Both audio and image paths
+   enforce path traversal protection.
+2. **Call Gemini (Pass 1)** — File sent inline with `SCHEMA_PROMPT_V2` (audio) or
+   `IMAGE_EXTRACTION_PROMPT` (image). Both prompts include field definitions, extraction rules,
+   few-shot examples, and `__confidence` markers for the 5 fuzzy fields. 3-attempt exponential
+   backoff on 429/5xx via `call_gemini_generic()`.
 3. **Parse** — Markdown fence stripping, `json.loads()`, then `extract_confidence_markers()`
-   splits the 13 work-order fields from the `field__confidence` keys.
+   splits the 13 work-order fields from the `field__confidence` keys. `None` confidence → `"MEDIUM"`.
 4. **Schema validate** — `jsonschema.validate()` on the clean 13-field dict.
 5. **Post-extraction validate** — Fuzzy matching + time normalisation via `validate_work_order()`.
    Gemini confidence markers boost/penalise scores (HIGH +5, LOW −10).
-6. **Veracity pass (conditional)** — If overall status is REVIEW/FAIL *or* any fuzzy field
-   has LOW Gemini confidence, a second Gemini call re-verifies the extraction against the
-   original audio and patches INCORRECT fields.
+6. **Veracity pass (conditional)** — If overall status is REVIEW/FAIL *or* any fuzzy field has
+   LOW Gemini confidence, a second Gemini call re-verifies and patches INCORRECT fields.
+   Validation is **re-run** after corrections; `veracity_info["validation_post_veracity"]`
+   captures the updated status.
 7. **Encrypt & Write** — Full audit envelope (SHA-256, token counts, validation status,
-   veracity audit trail) written as Fernet-encrypted `.json.enc`.
+   veracity audit trail, optional preprocessing metadata) written as Fernet-encrypted `.json.enc`.
 
 ### Environment Variables
 
@@ -156,12 +161,14 @@ pip install opencv-python-headless Pillow numpy
 `processor/image_preprocessor.py` — quality assessment (GOOD/FAIR/POOR), deskew (Hough
 transform), CLAHE contrast enhancement, denoising, binarization, upscaling.
 
-`processor/image_processor.py` — Gemini Vision ingest. Validates file, optionally preprocesses,
-sends to Gemini with `IMAGE_EXTRACTION_PROMPT`, splits confidence markers.
+`processor/image_processor.py` — Gemini Vision ingest. Validates file (with path traversal
+guard), optionally preprocesses, sends to Gemini with `IMAGE_EXTRACTION_PROMPT` via retry
+wrapper, reuses `extract_confidence_markers()` from `parser.py`.
 
 ```python
 from processor.image_processor import process_image
-work_order, confidences, response = process_image("form.jpg", client, model_id)
+work_order, confidences, response, preprocess_result = process_image("form.jpg", client, model_id)
+# preprocess_result is PreprocessResult (quality, ops applied) or None for PDFs
 ```
 
 Supported: JPEG, PNG, WebP, HEIC/HEIF, PDF (scanned). Max 20 MB.
@@ -183,11 +190,17 @@ cd workorder_processing && python main.py audio/test_audio.wav -p
 # Change the model
 GEMINI_MODEL=gemini-2.5-pro python main.py audio/test_audio.wav
 
-# Run the full test suite (261 tests)
+# Run the full test suite (321 tests)
 cd workorder_processing && python -m pytest tests/ -v
 
 # Run only edge case tests
 cd workorder_processing && python -m pytest tests/test_edge_cases.py -v
+
+# Run only veracity tests
+cd workorder_processing && python -m pytest tests/test_veracity.py -v
+
+# Run only image processing tests
+cd workorder_processing && python -m pytest tests/test_image_processing.py -v
 
 # Validate an audio file without sending to Gemini
 python -c "from processor.validator import validate_audio_file; print(validate_audio_file('audio/test_audio.wav'))"

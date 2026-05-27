@@ -134,6 +134,62 @@ Format: "field_name__confidence": "HIGH" | "MEDIUM" | "LOW"
 {schema_block}
 </output_schema>
 
+<few_shot_examples>
+Example 1 — Clean input (all fields explicit):
+  Transcript: "This is James Hartwell from Hartwell Industrial Services. Date is the 14th.
+  I'm out at Main Workshop Bay 1 working on Truck TRK-001. The operator reported the engine
+  warning light was on and the oil pressure was low. Diagnosis: clogged oil filter and worn
+  serpentine belt. I replaced the heavy-duty oil filter and serpentine belt. Parts used:
+  OIL-FLT-HVY and BLT-SERP. Started at 8am, finished at 10:30. Total time two and a half
+  hours. No future recommendations. No remaining tasks."
+  Expected output: {{
+    "vehicle_equipment": "TRK-001",
+    "reported_problem": "Engine warning light on, low oil pressure",
+    "diagnosis_cause": "Clogged oil filter and worn serpentine belt",
+    "work_performed": "Replaced heavy-duty oil filter and serpentine belt",
+    "parts_used": "OIL-FLT-HVY, BLT-SERP",
+    "start_time": "08:00",
+    "end_time": "10:30",
+    "total_time_spent": "2h 30m",
+    "future_recommendations": "",
+    "remaining_tasks": "",
+    "worker": "James Hartwell",
+    "company": "Hartwell Industrial Services",
+    "location": "Main Workshop — Bay 1",
+    "worker__confidence": "HIGH",
+    "company__confidence": "HIGH",
+    "location__confidence": "HIGH",
+    "vehicle_equipment__confidence": "HIGH",
+    "parts_used__confidence": "HIGH"
+  }}
+
+Example 2 — Ambiguous input (partial names, inferred values):
+  Transcript: "Tom here, just finished up on the big excavator up at the northern yard.
+  Had a hydraulic leak — turned out to be a busted hose fitting. Swapped it out.
+  Can't remember the exact part number off the top of my head. Started around nine,
+  done by half eleven. Uh, no other issues."
+  Expected output: {{
+    "vehicle_equipment": "CAT 320 Excavator",
+    "reported_problem": "Hydraulic leak",
+    "diagnosis_cause": "Burst hose fitting",
+    "work_performed": "Replaced hydraulic hose fitting",
+    "parts_used": "",
+    "start_time": "09:00",
+    "end_time": "11:30",
+    "total_time_spent": "",
+    "future_recommendations": "",
+    "remaining_tasks": "",
+    "worker": "Tom",
+    "company": "",
+    "location": "Northern Depot — Yard B",
+    "worker__confidence": "LOW",
+    "company__confidence": "LOW",
+    "location__confidence": "MEDIUM",
+    "vehicle_equipment__confidence": "MEDIUM",
+    "parts_used__confidence": "HIGH"
+  }}
+</few_shot_examples>
+
 Analyze the provided audio and return the JSON object now."""
 
 

@@ -69,6 +69,8 @@ def build_response_envelope(
     raw_response: genai_types.GenerateContentResponse,
     extracted: dict,
     model_id: str,
+    validation_result=None,
+    veracity_info: dict | None = None,
 ) -> dict:
     """
     Wrap the extracted data with audit metadata:
@@ -90,7 +92,7 @@ def build_response_envelope(
             getattr(raw_response.candidates[0], "finish_reason", "UNKNOWN")
         )
 
-    return {
+    envelope = {
         "schema_version": "1.0",
         "processed_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "source_file": {
@@ -103,6 +105,15 @@ def build_response_envelope(
         "finish_reason": finish_reason,
         "extracted_data": extracted,
     }
+    if validation_result is not None:
+        envelope["validation"] = {
+            "overall_status": validation_result.overall_status.value,
+            "unresolved_fields": validation_result.unresolved_fields,
+            "review_fields": validation_result.review_fields,
+        }
+    if veracity_info is not None:
+        envelope["veracity_pass"] = veracity_info
+    return envelope
 
 
 FUZZY_FIELDS = {"worker", "company", "location", "vehicle_equipment", "parts_used"}
@@ -122,7 +133,13 @@ def extract_confidence_markers(raw_json: dict) -> tuple[dict, dict[str, str]]:
     for key, value in raw_json.items():
         if key.endswith("__confidence"):
             field_name = key.replace("__confidence", "")
-            confidences[field_name] = str(value).upper()
+            if field_name.endswith("__confidence"):
+                logger.warning("Skipping malformed confidence key: %s", key)
+                continue
+            if value is None:
+                confidences[field_name] = "MEDIUM"
+            else:
+                confidences[field_name] = str(value).upper()
         else:
             work_order[key] = value
 

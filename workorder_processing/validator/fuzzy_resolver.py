@@ -38,6 +38,8 @@ CANONICAL_RESOLVERS = {
 
 
 def _score_algorithms(query: str, candidate: str, weights: dict) -> tuple[float, dict]:
+    if not query.strip() or not candidate.strip():
+        return 0.0, {algo: 0.0 for algo in weights}
     algo_map = {
         "ratio":            lambda q, c: fuzz.ratio(q, c),
         "partial_ratio":    lambda q, c: fuzz.partial_ratio(q, c),

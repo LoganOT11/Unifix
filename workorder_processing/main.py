@@ -41,6 +41,12 @@ from processor import (
 )
 from processor.parser import extract_confidence_markers
 from processor.veracity import should_run_veracity, run_veracity_check, apply_veracity_corrections
+try:
+    from processor.image_processor import process_image as _process_image_gemini, validate_image_file as _validate_image_file
+    from processor.image_preprocessor import PreprocessResult
+    _IMAGE_PROCESSING_AVAILABLE = True
+except ImportError:
+    _IMAGE_PROCESSING_AVAILABLE = False
 from validator.work_order_validator import validate_work_order
 
 # ---------------------------------------------------------------------------
@@ -150,6 +156,17 @@ def process_audio(file_path: str, output_dir: str | None = None) -> dict:
             }
             if corrected_fields:
                 logger.info("Veracity corrections applied to: %s", corrected_fields)
+                post_veracity_validation = validate_work_order(work_order, confidences)
+                logger.info(
+                    "Post-veracity validation: %s  (unresolved=%s)",
+                    post_veracity_validation.overall_status.value,
+                    post_veracity_validation.unresolved_fields,
+                )
+                veracity_info["validation_post_veracity"] = {
+                    "overall_status": post_veracity_validation.overall_status.value,
+                    "unresolved_fields": post_veracity_validation.unresolved_fields,
+                    "review_fields": post_veracity_validation.review_fields,
+                }
         else:
             veracity_info = {"ran": True, "overall_verdict": "ERROR", "corrections_count": 0}
     else:
@@ -175,6 +192,67 @@ def process_audio(file_path: str, output_dir: str | None = None) -> dict:
     return envelope
 
 
+def process_image_file(file_path: str, output_dir: str | None = None) -> dict:
+    """
+    Full pipeline for image work orders: validate → preprocess → send to Gemini →
+    parse → post-extraction validate → optional veracity pass → encrypt and write.
+    """
+    if not _IMAGE_PROCESSING_AVAILABLE:
+        raise WorkOrderProcessorError(
+            "Image processing dependencies are not installed. "
+            "Run: pip install opencv-python-headless Pillow numpy"
+        )
+    abs_path = str(Path(file_path).resolve())
+    safe_root = str(Path.cwd())
+    meta = _validate_image_file(abs_path, safe_root=safe_root)
+    logger.info(
+        "Validated image file: %s  (%s, %s bytes)",
+        meta["path"], meta["mime_type"], f"{meta['size_bytes']:,}",
+    )
+
+    work_order, confidences, response, preprocess_result = _process_image_gemini(
+        abs_path, client, MODEL_ID, preprocess=True,
+    )
+    if preprocess_result:
+        logger.info(
+            "Image preprocessed: quality=%s, ops=%s",
+            preprocess_result.quality_before.value,
+            preprocess_result.operations_applied,
+        )
+
+    validate_extracted_data(work_order)
+    logger.info("Extracted data passed schema validation.")
+
+    validation_result = validate_work_order(work_order, confidences)
+    logger.info(
+        "Validation: %s  (unresolved=%s, review=%s)",
+        validation_result.overall_status.value,
+        validation_result.unresolved_fields,
+        validation_result.review_fields,
+    )
+
+    veracity_info: dict = {"ran": False}
+
+    envelope = build_response_envelope(abs_path, response, work_order, MODEL_ID,
+                                       validation_result=validation_result,
+                                       veracity_info=veracity_info)
+    if preprocess_result:
+        envelope["preprocessing"] = {
+            "quality_before": preprocess_result.quality_before.value,
+            "operations_applied": preprocess_result.operations_applied,
+            "estimated_improvement": preprocess_result.estimated_improvement,
+        }
+
+    out_dir = Path(output_dir).resolve() if output_dir else Path(abs_path).parent
+    out_dir.mkdir(parents=True, exist_ok=True)
+    base = Path(abs_path).stem
+    out_path = str(out_dir / base)
+
+    enc_path = write_encrypted_json(envelope, out_path)
+    logger.info("✅  Output written: %s", enc_path)
+    return envelope
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -183,8 +261,14 @@ def main():
         description="Extract structured work-order JSON from audio using Gemini.",
     )
     parser.add_argument(
-        "audio_file",
-        help="Path to the audio file to process.",
+        "input_file",
+        help="Path to the audio or image file to process.",
+    )
+    parser.add_argument(
+        "--mode", "-m",
+        choices=["audio", "image"],
+        default="audio",
+        help="Processing mode: 'audio' (default) or 'image'.",
     )
     parser.add_argument(
         "--output-dir", "-o",
@@ -199,7 +283,10 @@ def main():
     args = parser.parse_args()
 
     try:
-        envelope = process_audio(args.audio_file, output_dir=args.output_dir)
+        if args.mode == "image":
+            envelope = process_image_file(args.input_file, output_dir=args.output_dir)
+        else:
+            envelope = process_audio(args.input_file, output_dir=args.output_dir)
 
         # Print a summary to stdout
         ed = envelope.get("extracted_data", {})
@@ -212,9 +299,9 @@ def main():
         # Optional plaintext sidecar
         if args.plaintext:
             import json
-            out_dir = Path(args.output_dir).resolve() if args.output_dir else Path(args.audio_file).resolve().parent
+            out_dir = Path(args.output_dir).resolve() if args.output_dir else Path(args.input_file).resolve().parent
             out_dir.mkdir(parents=True, exist_ok=True)
-            plain_path = out_dir / (Path(args.audio_file).stem + ".json")
+            plain_path = out_dir / (Path(args.input_file).stem + ".json")
             plain_path.write_text(json.dumps(envelope, indent=2, ensure_ascii=False), encoding="utf-8")
             print(f"📄  Plaintext sidecar: {plain_path}")
 
