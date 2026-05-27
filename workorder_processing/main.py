@@ -39,6 +39,9 @@ from processor import (
     write_encrypted_json,
     configure_logging,
 )
+from processor.parser import extract_confidence_markers
+from processor.veracity import should_run_veracity, run_veracity_check, apply_veracity_corrections
+from validator.work_order_validator import validate_work_order
 
 # ---------------------------------------------------------------------------
 # Bootstrap — env, logging, client
@@ -112,11 +115,54 @@ def process_audio(file_path: str, output_dir: str | None = None) -> dict:
     extracted = parse_ai_json(response.text)
     logger.debug("Parsed extracted data: %s", extracted)
 
-    validate_extracted_data(extracted)
+    work_order, confidences = extract_confidence_markers(extracted)
+
+    validate_extracted_data(work_order)
     logger.info("Extracted data passed schema validation.")
 
+    # ── Phase 3b: Post-extraction validation ───────────────────────────
+    validation_result = validate_work_order(work_order, confidences)
+    logger.info(
+        "Validation: %s  (unresolved=%s, review=%s)",
+        validation_result.overall_status.value,
+        validation_result.unresolved_fields,
+        validation_result.review_fields,
+    )
+
+    # ── Phase 3c: Veracity pass ────────────────────────────────────────
+    veracity_info: dict = {}
+    if should_run_veracity(validation_result, confidences):
+        logger.info("Running veracity pass (status=%s)…", validation_result.overall_status.value)
+        veracity_result = run_veracity_check(
+            client=client,
+            model_id=MODEL_ID,
+            audio_bytes=audio_bytes,
+            mime_type=meta["detected_mime"],
+            first_pass_json=work_order,
+        )
+        if veracity_result:
+            work_order, corrected_fields = apply_veracity_corrections(work_order, veracity_result)
+            veracity_info = {
+                "ran": True,
+                "overall_verdict": veracity_result.get("overall_verdict"),
+                "corrections_count": veracity_result.get("corrections_count", 0),
+                "corrected_fields": corrected_fields,
+            }
+            if corrected_fields:
+                logger.info("Veracity corrections applied to: %s", corrected_fields)
+        else:
+            veracity_info = {"ran": True, "overall_verdict": "ERROR", "corrections_count": 0}
+    else:
+        veracity_info = {"ran": False}
+
     # ── Phase 4: Build envelope + write encrypted output ────────────────
-    envelope = build_response_envelope(abs_path, response, extracted, MODEL_ID)
+    envelope = build_response_envelope(abs_path, response, work_order, MODEL_ID)
+    envelope["validation"] = {
+        "overall_status": validation_result.overall_status.value,
+        "unresolved_fields": validation_result.unresolved_fields,
+        "review_fields": validation_result.review_fields,
+    }
+    envelope["veracity_pass"] = veracity_info
 
     out_dir = Path(output_dir).resolve() if output_dir else Path(abs_path).parent
     out_dir.mkdir(parents=True, exist_ok=True)

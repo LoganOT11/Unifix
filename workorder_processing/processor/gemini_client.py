@@ -70,6 +70,75 @@ JSON Schema:
 
 SCHEMA_PROMPT = _build_schema_prompt()
 
+
+def _build_schema_prompt_v2() -> str:
+    with open(_SCHEMA_PATH, "r", encoding="utf-8") as fh:
+        schema = json.load(fh)
+    schema_block = json.dumps(
+        {name: prop.get("type", "string") for name, prop in schema["properties"].items()},
+        indent=2,
+    )
+    return f"""<system_role>
+You are a precise data extraction engine for mechanical and maintenance work order logs.
+You receive audio transcripts or documents from field technicians and extract structured
+records. Accuracy is critical — every extracted value will be validated against a master
+database. Do not infer, guess, or embellish values that are not clearly stated.
+</system_role>
+
+<field_definitions>
+Extract ONLY the following fields:
+
+- vehicle_equipment : The asset tag, equipment ID, or full name of the vehicle or machine
+  being serviced. Examples: "TRK-001", "CAT 320 Excavator", "GEN-005". If multiple assets
+  are mentioned, capture the primary one being worked on.
+- reported_problem : The fault or complaint as described by the operator or requester.
+  Use their exact words where possible. Do not diagnose — only report.
+- diagnosis_cause : The root cause identified by the technician after inspection.
+  If no diagnosis is mentioned, use "".
+- work_performed : A concise description of the repair or maintenance actions taken.
+  Use active voice: "Replaced X", "Adjusted Y", "Flushed Z".
+- parts_used : Comma-separated list of parts, consumables, or materials used.
+  Include part numbers if stated. If no parts were used, use "".
+- start_time : The time the technician began work. If AM/PM is stated, convert to 24-hour.
+  Format: HH:MM. If unknown, use "".
+- end_time : The time work was completed. Same format as start_time.
+- total_time_spent : Do NOT calculate this. Extract it verbatim if stated. If not, use "".
+- future_recommendations : Any follow-up actions or warnings the technician recommends.
+  If none, use "".
+- remaining_tasks : Work deferred to a future visit. If none, use "".
+- worker : The full name of the technician. If only partial name given, capture what is
+  available. If unknown, use "".
+- company : The name of the maintenance company. Capture abbreviations if that is all
+  stated. If unknown, use "".
+- location : Where the work was performed. As specific as stated. If unknown, use "".
+</field_definitions>
+
+<extraction_rules>
+1. ONLY extract values explicitly stated or clearly implied. Never invent or estimate.
+2. If a field is ambiguous or unclear, use "" rather than guessing.
+3. Preserve the speaker's terminology — the downstream system will normalise values.
+4. For times: extract exactly what is stated. Do not convert unless unambiguous.
+5. Return ONLY the JSON object — no preamble, no markdown fences, no explanation.
+</extraction_rules>
+
+<confidence_markers>
+For each of these five fields, also emit a confidence suffix:
+  vehicle_equipment, worker, company, location, parts_used
+Format: "field_name__confidence": "HIGH" | "MEDIUM" | "LOW"
+- HIGH   = value was stated explicitly and unambiguously
+- MEDIUM = value was implied, partially stated, or required minor inference
+- LOW    = best guess; not confident it is correct
+</confidence_markers>
+
+<output_schema>
+{schema_block}
+</output_schema>
+
+Analyze the provided audio and return the JSON object now."""
+
+
+SCHEMA_PROMPT_V2 = _build_schema_prompt_v2()
+
 # ---------------------------------------------------------------------------
 # Resilient API call
 # ---------------------------------------------------------------------------
@@ -93,7 +162,7 @@ def call_gemini_with_retry(
         try:
             return client.models.generate_content(
                 model=model_id,
-                contents=[audio_part, SCHEMA_PROMPT],
+                contents=[audio_part, SCHEMA_PROMPT_V2],
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
                     temperature=0.2,
@@ -114,6 +183,38 @@ def call_gemini_with_retry(
                 ) from exc
 
     # Should be unreachable
+    raise APICallError(f"Gemini API call exhausted all {max_retries} retries.")
+
+
+def call_gemini_generic(
+    client: genai.Client,
+    model_id: str,
+    contents: list,
+    config: types.GenerateContentConfig,
+    max_retries: int = 3,
+) -> types.GenerateContentResponse:
+    """Generic Gemini call with retry — accepts arbitrary contents list."""
+    retryable_codes = {429, 500, 502, 503, 504}
+    for attempt in range(1, max_retries + 1):
+        try:
+            return client.models.generate_content(
+                model=model_id,
+                contents=contents,
+                config=config,
+            )
+        except Exception as exc:
+            status = _extract_status(exc)
+            if status in retryable_codes and attempt < max_retries:
+                wait = 2 ** attempt
+                logger.warning(
+                    "API error %s (attempt %d/%d). Retrying in %ds…",
+                    status or type(exc).__name__, attempt, max_retries, wait,
+                )
+                time.sleep(wait)
+            else:
+                raise APICallError(
+                    f"Gemini API call failed after {attempt} attempt(s): {exc}"
+                ) from exc
     raise APICallError(f"Gemini API call exhausted all {max_retries} retries.")
 
 

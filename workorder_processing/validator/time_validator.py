@@ -11,6 +11,13 @@ _PATTERNS = [
             int(m.group(2))
         )
     ),
+    (
+        re.compile(r'^(\d{1,2})\s*(am|pm)$', re.I),
+        lambda m: (
+            (int(m.group(1)) % 12) + (12 if m.group(2).lower() == 'pm' else 0),
+            0
+        )
+    ),
 ]
 
 _DURATION_PATTERNS = [
@@ -34,6 +41,12 @@ def _parse_clock_time(value: str) -> str | None:
 
 def _parse_duration(value: str) -> str | None:
     v = value.strip()
+
+    m = re.match(r'^(\d+(?:\.\d+)?)\s*h(?:our)?s?$', v, re.I)
+    if m:
+        total_minutes = int(float(m.group(1)) * 60)
+        h, mins = divmod(total_minutes, 60)
+        return f"{h}h {mins}m"
 
     m = _DURATION_PATTERNS[0].search(v)
     if m:

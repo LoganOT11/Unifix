@@ -33,8 +33,11 @@ Unifix/
 │   │   ├── exceptions.py         ← Typed exception hierarchy
 │   │   ├── logging_config.py     ← Structured logging + PII sanitizer
 │   │   ├── validator.py          ← Audio file pre-flight validation (6 checks)
-│   │   ├── gemini_client.py      ← Client factory, prompt, retry wrapper
-│   │   ├── parser.py             ← JSON parse, jsonschema validate, audit envelope
+│   │   ├── gemini_client.py      ← Client factory, SCHEMA_PROMPT_V2, retry wrappers
+│   │   ├── parser.py             ← JSON parse, schema validate, confidence marker extraction
+│   │   ├── veracity.py           ← Second-pass Gemini verification (REVIEW/FAIL trigger)
+│   │   ├── image_preprocessor.py ← OpenCV quality assessment, deskew, CLAHE, binarize
+│   │   ├── image_processor.py    ← Gemini Vision ingest for handwritten work order images
 │   │   └── crypto.py             ← Fernet encrypt/decrypt for output files
 │   ├── schemas/
 │   │   └── work_order_v1.json    ← Canonical JSON schema (13 required string fields)
@@ -75,12 +78,20 @@ python main.py audio/test_audio.wav -o outputs/ -p   # with output dir + plainte
 
 1. **Validate** — Path traversal guard, file existence, filename safety, extension allowlist,
    size bounds (1 KB–200 MB), magic-byte MIME sniffing.
-2. **Call Gemini** — Audio sent inline via `types.Part.from_bytes()` with the schema prompt
-   (built from `schemas/work_order_v1.json`). 3-attempt exponential backoff on 429/5xx.
-3. **Parse & Validate** — Markdown fence stripping, `json.loads()`, `jsonschema.validate()`
-   against `schemas/work_order_v1.json`.
-4. **Encrypt & Write** — Full audit envelope (SHA-256, token counts, finish reason) written
-   as Fernet-encrypted `.json.enc`. Key stored at `~/.workorder_processor.key` (chmod 600).
+2. **Call Gemini (Pass 1)** — Audio sent inline with `SCHEMA_PROMPT_V2`. The improved prompt
+   includes field definitions, extraction rules, and requests `__confidence` markers for the
+   5 fuzzy fields (`worker`, `company`, `location`, `vehicle_equipment`, `parts_used`).
+   3-attempt exponential backoff on 429/5xx.
+3. **Parse** — Markdown fence stripping, `json.loads()`, then `extract_confidence_markers()`
+   splits the 13 work-order fields from the `field__confidence` keys.
+4. **Schema validate** — `jsonschema.validate()` on the clean 13-field dict.
+5. **Post-extraction validate** — Fuzzy matching + time normalisation via `validate_work_order()`.
+   Gemini confidence markers boost/penalise scores (HIGH +5, LOW −10).
+6. **Veracity pass (conditional)** — If overall status is REVIEW/FAIL *or* any fuzzy field
+   has LOW Gemini confidence, a second Gemini call re-verifies the extraction against the
+   original audio and patches INCORRECT fields.
+7. **Encrypt & Write** — Full audit envelope (SHA-256, token counts, validation status,
+   veracity audit trail) written as Fernet-encrypted `.json.enc`.
 
 ### Environment Variables
 
@@ -107,19 +118,19 @@ Resolves Gemini output against a reference database after extraction. Run from `
 - **Pass-through** (free text): `reported_problem`, `diagnosis_cause`, `work_performed`, `future_recommendations`, `remaining_tasks`
 
 **Resolution outcomes:** `EXACT` (≥100) → `HIGH_CONFIDENCE` (≥85) → `LOW_CONFIDENCE` (60–84) → `NO_MATCH` (<60).
-Overall status: `PASS` / `REVIEW` (any LOW_CONF) / `FAIL` (NO_MATCH on required fields).
+Overall status: `PASS` / `REVIEW` (any LOW_CONF) / `FAIL` (NO_MATCH or EMPTY on required fields).
 
+`validate_work_order()` accepts an optional `confidences` dict from Gemini's confidence markers:
 ```python
 from validator.work_order_validator import validate_work_order
-result = validate_work_order(extracted_json)
+result = validate_work_order(extracted_json, confidences={"worker": "HIGH", "company": "LOW"})
 print(result.overall_status, result.unresolved_fields)
 ```
 
+`FieldResult` now includes `top_candidates: list[dict]` (top-3 scored DB matches with scores).
 `db/reference_data.py` is the mock store — replace its getter functions with real DB queries in production.
 
-## Fuzzy Matching Evaluation
-
-Full evaluation report: `FUZZY_MATCHING_EVALUATION.md`
+## Fuzzy Matching & Time Validation
 
 ### Scoring Model
 
@@ -133,24 +144,35 @@ Each fuzzy field uses a weighted multi-algorithm ensemble from rapidfuzz:
 Thresholds: EXACT ≥ 100, HIGH_CONF ≥ 85, LOW_CONF ≥ 60, NO_MATCH < 60.
 Parts use **minimum** per-token score for overall status.
 
-## Test Database (Legacy SQLite)
+**Time normalisation:** `start_time`/`end_time` → `HH:MM` 24h; `total_time_spent` → `Xh Ym`.
+Accepts: `8am`, `08:30 PM`, `08:30:00`, `30m`, `2.5 hours`, `90 min`, `1:30`, `100:30`.
 
-SQLite with FTS5 full-text search. 81 seeded records across `equipment`, `companies`, `locations`, `parts`.
+## Image Processing (requires `opencv-python-headless`)
 
 ```bash
-python test_database/database.py --seed                      # seed (idempotent)
-python test_database/database.py --query equipment "cat dozer"
+pip install opencv-python-headless Pillow numpy
 ```
 
-Uses `difflib.SequenceMatcher` (stdlib only). The `validator/` package supersedes this for
-post-extraction validation; `test_database/` remains as a standalone reference lookup tool.
+`processor/image_preprocessor.py` — quality assessment (GOOD/FAIR/POOR), deskew (Hough
+transform), CLAHE contrast enhancement, denoising, binarization, upscaling.
+
+`processor/image_processor.py` — Gemini Vision ingest. Validates file, optionally preprocesses,
+sends to Gemini with `IMAGE_EXTRACTION_PROMPT`, splits confidence markers.
+
+```python
+from processor.image_processor import process_image
+work_order, confidences, response = process_image("form.jpg", client, model_id)
+```
+
+Supported: JPEG, PNG, WebP, HEIC/HEIF, PDF (scanned). Max 20 MB.
+
+## Test Database (Legacy SQLite)
+
+SQLite + FTS5, 81 seeded records. The `validator/` package supersedes this; `test_database/` remains as a standalone lookup tool. Seed: `python test_database/database.py --seed`
 
 ## Proxy (Development)
 
-`proxy.py` injects the real API key on port 8787, keeping it out of the codebase. Run with:
-```bash
-python proxy.py
-```
+`proxy.py` injects the real API key on port 8787: `python proxy.py`
 
 ## Common Tasks
 
@@ -161,14 +183,11 @@ cd workorder_processing && python main.py audio/test_audio.wav -p
 # Change the model
 GEMINI_MODEL=gemini-2.5-pro python main.py audio/test_audio.wav
 
-# Run the validator test suite (68 original + 159 edge case = 227 total)
+# Run the full test suite (261 tests)
 cd workorder_processing && python -m pytest tests/ -v
 
 # Run only edge case tests
 cd workorder_processing && python -m pytest tests/test_edge_cases.py -v
-
-# Run the noisy test work order through the full validator
-cd workorder_processing && python -c "from validator.work_order_validator import validate_work_order; ..."
 
 # Validate an audio file without sending to Gemini
 python -c "from processor.validator import validate_audio_file; print(validate_audio_file('audio/test_audio.wav'))"

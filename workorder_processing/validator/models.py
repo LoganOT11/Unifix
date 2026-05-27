@@ -30,6 +30,7 @@ class FieldResult:
     matched_db_entry:  dict | None = None
     algorithm_scores:  dict[str, float] = field(default_factory=dict)
     notes:             str = ""
+    top_candidates:    list[dict] = field(default_factory=list)
 
 
 @dataclass

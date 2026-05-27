@@ -103,3 +103,15 @@ def resolve_part_canonical(matched_string: str) -> dict | None:
                                f"{p['part_number']} — {p['description']}"):
             return p
     return None
+
+def resolve_location_canonical(matched_name: str) -> dict | None:
+    for loc in LOCATIONS:
+        if loc["name"] == matched_name:
+            return loc
+    return None
+
+def resolve_company_canonical(matched_name: str) -> dict | None:
+    for c in COMPANIES:
+        if c["name"] == matched_name or c["short"] == matched_name:
+            return c
+    return None

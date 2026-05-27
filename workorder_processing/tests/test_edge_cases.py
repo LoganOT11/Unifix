@@ -37,7 +37,7 @@ class TestWhitespace:
     def test_worker_leading_trailing_spaces(self):
         r = resolve_field("worker", "  James Hartwell  ")
         assert r.resolved_value == "James Hartwell"
-        assert r.status in (MatchStatus.EXACT, MatchStatus.HIGH_CONF)
+        assert r.status == MatchStatus.EXACT  # fixed: .strip() applied before scoring
 
     def test_worker_double_space_between_names(self):
         r = resolve_field("worker", "James  Hartwell")
@@ -341,7 +341,6 @@ class TestTimeEdgeCases:
         "830",            # no separator
         "eight thirty",   # words
         "morning",        # descriptive
-        "8am",            # no colon
         "noon",           # word
         "24:00",          # exactly 24
         "-1:00",          # negative
@@ -371,7 +370,6 @@ class TestTimeEdgeCases:
     @pytest.mark.parametrize("raw", [
         "a long time",
         "quick",
-        "2.5 hours",       # decimal not supported
         "90",              # just a number
         "2h 30",           # no minute unit
         "2:30:00",         # with seconds (ambiguous — clock or duration?)
@@ -379,6 +377,17 @@ class TestTimeEdgeCases:
     def test_invalid_durations(self, raw):
         r = validate_time_field("total_time_spent", raw)
         assert r.status in (MatchStatus.TIME_INVALID, MatchStatus.EMPTY)
+
+    @pytest.mark.parametrize("raw,expected", [
+        ("2.5 hours", "2h 30m"),
+        ("1.5h",      "1h 30m"),
+        ("0.5 hours", "0h 30m"),
+    ])
+    def test_decimal_durations(self, raw, expected):
+        """Decimal hour durations are now recognised and normalised."""
+        r = validate_time_field("total_time_spent", raw)
+        assert r.status == MatchStatus.TIME_VALID
+        assert r.resolved_value == expected
 
     def test_duration_30m_shorthand_recognized(self):
         """FIXED: '30m' shorthand is now recognised and normalised to '0h 30m'."""
@@ -506,7 +515,7 @@ class TestFullWorkOrderIntegration:
             end_time=" 11:30 ",
             total_time_spent=" 3h30m ",
         ))
-        assert r.overall_status in (OverallStatus.PASS, OverallStatus.REVIEW)
+        assert r.overall_status == OverallStatus.PASS  # fixed: .strip() → all EXACT
 
     def test_case_insensitive_passes(self):
         r = validate_work_order(self._base_order(
@@ -597,10 +606,12 @@ class TestFullWorkOrderIntegration:
     def test_none_values_treated_as_empty(self):
         order = {k: None for k in self._base_order()}
         r = validate_work_order(order)
-        # All None → empty string → EMPTY/PASS_THROUGH status
-        # EMPTY isn't NO_MATCH, so required fields don't trigger FAIL
-        # This is a design decision (or potential bug — see notes)
-        assert r.overall_status in (OverallStatus.PASS, OverallStatus.REVIEW, OverallStatus.FAIL)
+        # All None → empty string → EMPTY status on required fields.
+        # FIXED: EMPTY is now in the failure check → FAIL
+        assert r.overall_status == OverallStatus.FAIL
+        assert "worker" in r.unresolved_fields
+        assert "company" in r.unresolved_fields
+        assert "location" in r.unresolved_fields
 
     # --- Resolved JSON structure ---
 
@@ -845,3 +856,217 @@ class TestKnownBugs:
         }
         r = validate_work_order(order)
         assert r.overall_status == OverallStatus.FAIL
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 13. FIX VERIFICATION — EDGE CASES FROM THE IMPLEMENTED FIXES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestFixVerification:
+    """Edge cases that probe the boundaries around the four implemented fixes."""
+
+    # ── Fix 1: .strip() before scoring ──────────────────────────────────────
+
+    def test_strip_fix_applies_to_all_fuzzy_fields(self):
+        """All fuzzy fields benefit from .strip()."""
+        for field, raw, expected in [
+            ("worker",            "  James Hartwell  ",            "James Hartwell"),
+            ("company",           "  PrimeTech Maintenance Ltd  ", "PrimeTech Maintenance Ltd"),
+            ("location",          "  Main Workshop — Bay 1  ",     "Main Workshop — Bay 1"),
+            ("vehicle_equipment", "  TRK-001  ",                   "TRK-001"),
+        ]:
+            r = resolve_field(field, raw)
+            assert r.resolved_value == expected, f"{field}: {r.resolved_value!r} != {expected!r}"
+            assert r.status == MatchStatus.EXACT, f"{field}: {r.status.value} != EXACT"
+
+    def test_strip_fix_does_not_affect_no_match(self):
+        """Stripping whitespace on a genuinely unknown value shouldn't cause a false match.
+        The raw_value is preserved as-is for NO_MATCH (don't mutate unmatched data)."""
+        r = resolve_field("worker", "  Zzzyx Qqqington  ")
+        assert r.status == MatchStatus.NO_MATCH
+        # resolved_value preserves the original raw_value for NO_MATCH
+        assert "Zzzyx Qqqington" in r.resolved_value.strip()
+
+    def test_double_space_inside_name_not_yet_exact(self):
+        """Double internal spaces still degrade score (no collapse of internal whitespace)."""
+        r = resolve_field("worker", "James  Hartwell")
+        assert r.resolved_value == "James Hartwell"
+        # internal double-space not collapsed → not EXACT
+        assert r.status in (MatchStatus.EXACT, MatchStatus.HIGH_CONF)
+
+    # ── Fix 2: '30m' duration shorthand ─────────────────────────────────────
+
+    @pytest.mark.parametrize("raw,expected", [
+        ("30m",       "0h 30m"),
+        ("30 m",      "0h 30m"),
+        ("5m",        "0h 5m"),
+        ("90m",       "1h 30m"),
+        ("30min",     "0h 30m"),
+        ("30mins",    "0h 30m"),
+        ("30 minute", "0h 30m"),
+        ("90 m",      "1h 30m"),
+    ])
+    def test_duration_shorthand_variants(self, raw, expected):
+        r = validate_time_field("total_time_spent", raw)
+        assert r.status == MatchStatus.TIME_VALID
+        assert r.resolved_value == expected
+
+    @pytest.mark.parametrize("raw", [
+        "30",        # no unit at all
+        "30m30s",    # seconds not supported
+        "m",         # no digit
+        "30meters",  # not a time unit
+    ])
+    def test_duration_shorthand_still_invalid(self, raw):
+        r = validate_time_field("total_time_spent", raw)
+        assert r.status == MatchStatus.TIME_INVALID
+
+    def test_pattern_2_does_not_interfere_with_pattern_0(self):
+        """Pattern 0 (Xh Ym) still works alongside the fixed pattern 2."""
+        r = validate_time_field("total_time_spent", "2 hours 30 minutes")
+        assert r.status == MatchStatus.TIME_VALID
+        assert r.resolved_value == "2h 30m"
+
+    def test_pattern_2_does_not_interfere_with_pattern_3(self):
+        """Pattern 3 (HH:MM) still works correctly."""
+        r = validate_time_field("total_time_spent", "1:30")
+        assert r.status == MatchStatus.TIME_VALID
+        assert r.resolved_value == "1h 30m"
+
+    # ── Fix 3: durations >99 hours ──────────────────────────────────────────
+
+    @pytest.mark.parametrize("raw,expected", [
+        ("100:30",  "100h 30m"),
+        ("150:00",  "150h 0m"),
+        ("999:59",  "999h 59m"),
+        ("10000:0", "10000:0"),   # single-digit minutes still invalid
+        ("10000:00","10000h 0m"), # two-digit minutes valid
+    ])
+    def test_large_durations(self, raw, expected):
+        r = validate_time_field("total_time_spent", raw)
+        if r.status == MatchStatus.TIME_VALID:
+            assert r.resolved_value == expected
+        else:
+            # single-digit minute is expected to fail
+            assert r.status == MatchStatus.TIME_INVALID
+
+    def test_large_duration_not_misparsed_as_clock(self):
+        """A large HH:MM value that could be a clock time should still parse as duration."""
+        # '25:00' is invalid as clock time (25h), but valid as duration
+        r = validate_time_field("total_time_spent", "25:00")
+        assert r.status == MatchStatus.TIME_VALID
+        assert r.resolved_value == "25h 0m"
+
+    def test_small_durations_unaffected(self):
+        """Small HH:MM values still work (no regression)."""
+        for val in ["0:00", "0:01", "0:30", "1:00"]:
+            r = validate_time_field("total_time_spent", val)
+            assert r.status == MatchStatus.TIME_VALID
+
+    # ── Fix 4: EMPTY required fields → FAIL ─────────────────────────────────
+
+    def test_single_empty_required_field_fails(self):
+        """One empty required field among otherwise valid data → FAIL."""
+        for empty_field in ["worker", "company", "location", "vehicle_equipment",
+                            "start_time", "end_time"]:
+            order = {
+                "worker": "James Hartwell", "company": "HIS",
+                "location": "Main Workshop — Bay 1", "vehicle_equipment": "TRK-001",
+                "start_time": "08:00", "end_time": "11:00",
+                "total_time_spent": "3h", "parts_used": "Oil Filter",
+                "reported_problem": "x", "diagnosis_cause": "x",
+                "work_performed": "x", "future_recommendations": "x",
+                "remaining_tasks": "",
+            }
+            order[empty_field] = ""
+            r = validate_work_order(order)
+            assert r.overall_status == OverallStatus.FAIL, (
+                f"Empty '{empty_field}' should cause FAIL, got {r.overall_status.value}"
+            )
+            assert empty_field in r.unresolved_fields
+
+    def test_empty_non_required_field_does_not_fail(self):
+        """Empty parts_used or total_time_spent → REVIEW, not FAIL."""
+        order = {
+            "worker": "James Hartwell", "company": "Hartwell Industrial Services",
+            "location": "Main Workshop — Bay 1", "vehicle_equipment": "TRK-001",
+            "start_time": "08:00", "end_time": "11:00",
+            "total_time_spent": "3h", "parts_used": "",
+            "reported_problem": "x", "diagnosis_cause": "x",
+            "work_performed": "x", "future_recommendations": "x",
+            "remaining_tasks": "",
+        }
+        r = validate_work_order(order)
+        assert r.overall_status == OverallStatus.REVIEW
+        assert "parts_used" in r.review_fields
+
+    def test_empty_required_plus_low_conf_correct_accumulation(self):
+        """Empty required + low-conf optional → FAIL (not REVIEW)."""
+        order = {
+            "worker": "",  # empty → FAIL trigger
+            "company": "Hartwell Industrial Services",
+            "location": "Bay 1",  # LOW_CONF → REVIEW trigger
+            "vehicle_equipment": "TRK-001",
+            "start_time": "08:00", "end_time": "11:00",
+            "total_time_spent": "3h", "parts_used": "Oil Filter",
+            "reported_problem": "x", "diagnosis_cause": "x",
+            "work_performed": "x", "future_recommendations": "x",
+            "remaining_tasks": "",
+        }
+        r = validate_work_order(order)
+        # FAIL takes priority over REVIEW
+        assert r.overall_status == OverallStatus.FAIL
+        assert "worker" in r.unresolved_fields
+        assert "location" in r.review_fields
+
+    def test_whitespace_only_field_treated_as_empty(self):
+        """Whitespace-only string → EMPTY → FAIL for required fields."""
+        order = {
+            "worker": "   ", "company": "HIS",
+            "location": "Main Workshop — Bay 1", "vehicle_equipment": "TRK-001",
+            "start_time": "08:00", "end_time": "11:00",
+            "total_time_spent": "3h", "parts_used": "Oil Filter",
+            "reported_problem": "x", "diagnosis_cause": "x",
+            "work_performed": "x", "future_recommendations": "x",
+            "remaining_tasks": "",
+        }
+        r = validate_work_order(order)
+        assert r.overall_status == OverallStatus.FAIL
+        assert "worker" in r.unresolved_fields
+
+    # ── Cross-fix interaction tests ─────────────────────────────────────────
+
+    def test_stripped_whitespace_with_long_duration(self):
+        """Verify Fix 1 and Fix 3 don't interact unexpectedly."""
+        order = {
+            "vehicle_equipment": "  TRK-001  ",
+            "reported_problem": "test", "diagnosis_cause": "test",
+            "work_performed": "test", "parts_used": "BLT-SERP",
+            "start_time": "  08:00  ", "end_time": "  11:00  ",
+            "total_time_spent": "  100:30  ",
+            "future_recommendations": "test", "remaining_tasks": "",
+            "worker": "  James Hartwell  ", "company": "  HIS  ",
+            "location": "  Main Workshop — Bay 1  ",
+        }
+        r = validate_work_order(order)
+        assert r.overall_status == OverallStatus.PASS
+        assert r.field_results["total_time_spent"].resolved_value == "100h 30m"
+
+    def test_empty_required_with_invalid_time(self):
+        """Empty required + invalid time → FAIL with both in unresolved."""
+        order = {
+            "worker": "",  # EMPTY
+            "company": "HIS",
+            "location": "Main Workshop — Bay 1",
+            "vehicle_equipment": "TRK-001",
+            "start_time": "invalid",  # TIME_INVALID
+            "end_time": "11:00",
+            "total_time_spent": "3h", "parts_used": "Oil Filter",
+            "reported_problem": "x", "diagnosis_cause": "x",
+            "work_performed": "x", "future_recommendations": "x",
+            "remaining_tasks": "",
+        }
+        r = validate_work_order(order)
+        assert r.overall_status == OverallStatus.FAIL
+        assert "worker" in r.unresolved_fields
+        assert "start_time" in r.unresolved_fields

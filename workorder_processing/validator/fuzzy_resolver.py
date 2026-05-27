@@ -5,6 +5,7 @@ from db.reference_data import (
     get_worker_names, get_company_names, get_location_names,
     get_equipment_strings, get_part_strings,
     resolve_worker_canonical, resolve_equipment_canonical, resolve_part_canonical,
+    resolve_location_canonical, resolve_company_canonical,
 )
 
 THRESHOLD_EXACT = 100.0
@@ -31,6 +32,8 @@ CANONICAL_RESOLVERS = {
     "worker":            resolve_worker_canonical,
     "vehicle_equipment": resolve_equipment_canonical,
     "parts_used":        resolve_part_canonical,
+    "location":          resolve_location_canonical,
+    "company":           resolve_company_canonical,
 }
 
 
@@ -59,22 +62,21 @@ def _find_best_match(
     query: str,
     candidates: list[str],
     weights: dict,
-) -> tuple[str, float, dict]:
+    top_n: int = 3,
+) -> tuple[str, float, dict, list[dict]]:
     if not candidates or not query.strip():
-        return "", 0.0, {}
+        return "", 0.0, {}, []
 
-    best_candidate = ""
-    best_score = -1.0
-    best_algo_scores: dict = {}
-
+    scored: list[tuple[str, float, dict]] = []
     for candidate in candidates:
         score, algo_scores = _score_algorithms(query, candidate, weights)
-        if score > best_score:
-            best_score = score
-            best_candidate = candidate
-            best_algo_scores = algo_scores
+        scored.append((candidate, score, algo_scores))
 
-    return best_candidate, best_score, best_algo_scores
+    scored.sort(key=lambda x: x[1], reverse=True)
+    best_candidate, best_score, best_algo_scores = scored[0]
+    top_candidates = [{"value": c, "score": round(s, 2)} for c, s, _ in scored[:top_n]]
+
+    return best_candidate, best_score, best_algo_scores, top_candidates
 
 
 def _status_from_score(score: float) -> MatchStatus:
@@ -97,9 +99,10 @@ def resolve_field(field_name: str, raw_value: str) -> FieldResult:
             status=MatchStatus.EMPTY,
         )
 
+    raw_value = raw_value.strip()
     candidates = DB_LOADERS[field_name]()
     weights    = FIELD_WEIGHTS[field_name]
-    best_match, score, algo_scores = _find_best_match(raw_value, candidates, weights)
+    best_match, score, algo_scores, top_candidates = _find_best_match(raw_value, candidates, weights)
     status = _status_from_score(score)
 
     canonical_resolver = CANONICAL_RESOLVERS.get(field_name)
@@ -116,7 +119,36 @@ def resolve_field(field_name: str, raw_value: str) -> FieldResult:
         matched_db_entry=db_entry,
         algorithm_scores=algo_scores,
         notes=f"Best DB candidate: '{best_match}'" if status == MatchStatus.NO_MATCH else "",
+        top_candidates=top_candidates,
     )
+
+
+GEMINI_CONFIDENCE_BOOST: dict[str, float] = {
+    "HIGH":   5.0,
+    "MEDIUM": 0.0,
+    "LOW":   -10.0,
+}
+
+
+def resolve_field_with_gemini_confidence(
+    field_name: str,
+    raw_value: str,
+    gemini_confidence: str = "MEDIUM",
+) -> FieldResult:
+    """Resolve a field then apply a score boost based on Gemini's confidence."""
+    if field_name == "parts_used":
+        result = resolve_parts_used(raw_value)
+    else:
+        result = resolve_field(field_name, raw_value)
+
+    boost = GEMINI_CONFIDENCE_BOOST.get(gemini_confidence.upper(), 0.0)
+    if boost != 0.0 and result.score > 0.0:
+        adjusted = max(0.0, min(100.0, result.score + boost))
+        result.score = round(adjusted, 2)
+        result.status = _status_from_score(adjusted)
+        result.notes += f" | Gemini confidence: {gemini_confidence} (boost: {boost:+.1f})"
+
+    return result
 
 
 def resolve_parts_used(raw_value: str) -> FieldResult:
@@ -137,7 +169,7 @@ def resolve_parts_used(raw_value: str) -> FieldResult:
     all_algo_scores: list[dict] = []
 
     for token in tokens:
-        best_match, score, algo_scores = _find_best_match(token, candidates, weights)
+        best_match, score, algo_scores, _ = _find_best_match(token, candidates, weights)
         all_scores.append(score)
         all_algo_scores.append({token: algo_scores})
         status = _status_from_score(score)

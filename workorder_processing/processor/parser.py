@@ -103,3 +103,30 @@ def build_response_envelope(
         "finish_reason": finish_reason,
         "extracted_data": extracted,
     }
+
+
+FUZZY_FIELDS = {"worker", "company", "location", "vehicle_equipment", "parts_used"}
+
+
+def extract_confidence_markers(raw_json: dict) -> tuple[dict, dict[str, str]]:
+    """
+    Split Gemini response into clean work order fields and confidence markers.
+
+    Returns:
+        work_order: dict with only the 13 schema fields (no __confidence keys)
+        confidences: {"worker": "HIGH", "company": "MEDIUM", ...}
+    """
+    work_order: dict = {}
+    confidences: dict[str, str] = {}
+
+    for key, value in raw_json.items():
+        if key.endswith("__confidence"):
+            field_name = key.replace("__confidence", "")
+            confidences[field_name] = str(value).upper()
+        else:
+            work_order[key] = value
+
+    for f in FUZZY_FIELDS:
+        confidences.setdefault(f, "MEDIUM")
+
+    return work_order, confidences

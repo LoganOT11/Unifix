@@ -207,12 +207,23 @@ class TestTimeValidation:
         "08:65",
         "half past 8",
         "morning",
-        "8am",
     ])
     def test_invalid_start_times(self, raw):
         from validator.time_validator import validate_time_field
         result = validate_time_field("start_time", raw)
         assert result.status == MatchStatus.TIME_INVALID
+
+    @pytest.mark.parametrize("raw,expected", [
+        ("8am",  "08:00"),
+        ("8pm",  "20:00"),
+        ("12pm", "12:00"),
+        ("12am", "00:00"),
+    ])
+    def test_valid_no_colon_clock_times(self, raw, expected):
+        from validator.time_validator import validate_time_field
+        result = validate_time_field("start_time", raw)
+        assert result.status == MatchStatus.TIME_VALID
+        assert result.resolved_value == expected
 
     @pytest.mark.parametrize("raw,expected", [
         ("01:30",              "1h 30m"),
