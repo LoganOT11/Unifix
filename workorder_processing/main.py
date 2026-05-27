@@ -1,0 +1,202 @@
+#!/usr/bin/env python3
+"""
+Work Order Audio Processor
+
+Processes audio recordings of mechanical/maintenance work and extracts
+structured JSON data using Gemini.
+
+Sends a local audio file to Gemini for transcription and schema extraction,
+validates the result against a JSON schema, wraps it in an audit envelope,
+and writes an encrypted .json.enc output file.
+
+Usage:
+    python main.py <audio_file_path>
+    python main.py examples/recording.mp3
+    python main.py examples/recording.mp3 --output-dir outputs/
+"""
+
+import argparse
+import logging
+import os
+import sys
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+from processor import (
+    AudioValidationError,
+    APICallError,
+    ResponseParseError,
+    SchemaValidationError,
+    CryptoError,
+    WorkOrderProcessorError,
+    validate_audio_file,
+    create_client,
+    call_gemini_with_retry,
+    parse_ai_json,
+    validate_extracted_data,
+    build_response_envelope,
+    write_encrypted_json,
+    configure_logging,
+)
+
+# ---------------------------------------------------------------------------
+# Bootstrap — env, logging, client
+# ---------------------------------------------------------------------------
+# Walk up from this file's directory to find the project-root .env
+_script_dir = Path(__file__).resolve().parent
+for _ in range(3):
+    _candidate = _script_dir / ".env"
+    if _candidate.is_file():
+        load_dotenv(_candidate)
+        break
+    _script_dir = _script_dir.parent
+
+API_KEY = os.environ.get("GOOGLE_API_KEY")
+if not API_KEY:
+    raise RuntimeError(
+        "GOOGLE_API_KEY is not set. Either:\n"
+        "  - Place a .env file in the project root, or\n"
+        "  - Export it:  export GOOGLE_API_KEY=your-key"
+    )
+
+log_file = os.environ.get("PROCESSOR_LOG", str(Path(__file__).resolve().parent / "processor.log"))
+logger = configure_logging(log_file=log_file)
+
+MODEL_ID = os.environ.get("GEMINI_MODEL", "gemini-3.1-flash-lite")
+client = create_client(API_KEY)
+
+# ---------------------------------------------------------------------------
+# Core pipeline
+# ---------------------------------------------------------------------------
+def process_audio(file_path: str, output_dir: str | None = None) -> dict:
+    """
+    Full pipeline: validate → send to Gemini → parse → validate schema →
+    build envelope → encrypt and write.
+
+    Returns the full response envelope dict.
+    Raises WorkOrderProcessorError subclasses on failure.
+    """
+    abs_path = str(Path(file_path).resolve())
+
+    # ── Phase 1: Input validation ──────────────────────────────────────
+    safe_root = str(Path.cwd())
+    meta = validate_audio_file(abs_path, safe_root=safe_root)
+    logger.info(
+        "Validated audio file: %s  (%s, %s, %s)",
+        meta["path"], meta["detected_mime"], meta["extension"],
+        f"{meta['size_bytes']:,} bytes",
+    )
+
+    # ── Phase 2: Read + send to Gemini ─────────────────────────────────
+    audio_bytes = Path(abs_path).read_bytes()
+    logger.info("Sending to Gemini (model=%s, size=%d bytes)…", MODEL_ID, len(audio_bytes))
+
+    response = call_gemini_with_retry(
+        client=client,
+        model_id=MODEL_ID,
+        audio_bytes=audio_bytes,
+        mime_type=meta["detected_mime"],
+    )
+
+    usage_info = ""
+    if hasattr(response, "usage_metadata") and response.usage_metadata:
+        u = response.usage_metadata
+        usage_info = (
+            f"prompt_tokens={getattr(u, 'prompt_token_count', '?')}, "
+            f"response_tokens={getattr(u, 'candidates_token_count', '?')}"
+        )
+    logger.info("Gemini response received. %s", usage_info)
+
+    # ── Phase 3: Parse + validate ──────────────────────────────────────
+    extracted = parse_ai_json(response.text)
+    logger.debug("Parsed extracted data: %s", extracted)
+
+    validate_extracted_data(extracted)
+    logger.info("Extracted data passed schema validation.")
+
+    # ── Phase 4: Build envelope + write encrypted output ────────────────
+    envelope = build_response_envelope(abs_path, response, extracted, MODEL_ID)
+
+    out_dir = Path(output_dir).resolve() if output_dir else Path(abs_path).parent
+    out_dir.mkdir(parents=True, exist_ok=True)
+    base = Path(abs_path).stem
+    out_path = str(out_dir / base)
+
+    enc_path = write_encrypted_json(envelope, out_path)
+    logger.info("✅  Output written: %s", enc_path)
+
+    return envelope
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+def main():
+    parser = argparse.ArgumentParser(
+        description="Extract structured work-order JSON from audio using Gemini.",
+    )
+    parser.add_argument(
+        "audio_file",
+        help="Path to the audio file to process.",
+    )
+    parser.add_argument(
+        "--output-dir", "-o",
+        default=None,
+        help="Directory for output files (default: same directory as audio file).",
+    )
+    parser.add_argument(
+        "--plaintext", "-p",
+        action="store_true",
+        help="Also write a plaintext .json file alongside the encrypted one.",
+    )
+    args = parser.parse_args()
+
+    try:
+        envelope = process_audio(args.audio_file, output_dir=args.output_dir)
+
+        # Print a summary to stdout
+        ed = envelope.get("extracted_data", {})
+        print(f"\n📋  Summary  —  {ed.get('vehicle_equipment', 'N/A')}")
+        print(f"   Problem   : {ed.get('reported_problem', 'N/A')[:80]}")
+        print(f"   Time      : {ed.get('start_time', '?')} → {ed.get('end_time', '?')} "
+              f"({ed.get('total_time_spent', '?')})")
+        print(f"   Finish    : {envelope.get('finish_reason', 'UNKNOWN')}")
+
+        # Optional plaintext sidecar
+        if args.plaintext:
+            import json
+            out_dir = Path(args.output_dir).resolve() if args.output_dir else Path(args.audio_file).resolve().parent
+            out_dir.mkdir(parents=True, exist_ok=True)
+            plain_path = out_dir / (Path(args.audio_file).stem + ".json")
+            plain_path.write_text(json.dumps(envelope, indent=2, ensure_ascii=False), encoding="utf-8")
+            print(f"📄  Plaintext sidecar: {plain_path}")
+
+    except AudioValidationError as exc:
+        logger.error("Validation failed: %s", exc)
+        print(f"❌  Validation error: {exc}", file=sys.stderr)
+        sys.exit(2)
+    except APICallError as exc:
+        logger.error("API call failed: %s", exc)
+        print(f"❌  API error: {exc}", file=sys.stderr)
+        sys.exit(3)
+    except ResponseParseError as exc:
+        logger.error("Response parsing failed: %s", exc)
+        print(f"❌  Parse error: {exc}", file=sys.stderr)
+        sys.exit(4)
+    except SchemaValidationError as exc:
+        logger.warning("Schema validation failed: %s", exc)
+        print(f"⚠️  Schema validation warning (output still saved): {exc}", file=sys.stderr)
+        # Continue — the output was already written before the exit
+    except (CryptoError, WorkOrderProcessorError) as exc:
+        logger.error("Processing failed: %s", exc)
+        print(f"❌  Error: {exc}", file=sys.stderr)
+        sys.exit(5)
+    except Exception as exc:
+        logger.exception("Unexpected error: %s", exc)
+        print(f"❌  Unexpected error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

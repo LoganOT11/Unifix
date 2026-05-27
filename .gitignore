@@ -32,5 +32,15 @@ Thumbs.db
 # Logs
 *.log
 
+# Encryption keys
+*.key
+
+# Encrypted output files
+*.enc
+outputs/
+
+# Audio examples (user data)
+workorder_processing/audio/
+
 # Conda
 conda-bld/
