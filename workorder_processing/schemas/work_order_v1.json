@@ -13,7 +13,10 @@
     "end_time",
     "total_time_spent",
     "future_recommendations",
-    "remaining_tasks"
+    "remaining_tasks",
+    "worker",
+    "company",
+    "location"
   ],
   "properties": {
     "vehicle_equipment":      { "type": "string" },
@@ -25,6 +28,9 @@
     "end_time":               { "type": "string" },
     "total_time_spent":       { "type": "string" },
     "future_recommendations": { "type": "string" },
-    "remaining_tasks":        { "type": "string" }
+    "remaining_tasks":        { "type": "string" },
+    "worker":                 { "type": "string" },
+    "company":                { "type": "string" },
+    "location":               { "type": "string" }
   }
 }
