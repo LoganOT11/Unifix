@@ -9,23 +9,10 @@ conda activate unifix       # activate
 conda deactivate            # deactivate
 ```
 
-Dependencies are tracked in two files:
-
-- **`environment.yml`** — Conda environment spec. Rebuild with:
-  ```bash
-  conda env create -f environment.yml
-  ```
-
-- **`requirements.txt`** — Pip dependencies. Install into active env:
-  ```bash
-  pip install -r requirements.txt
-  ```
-
-### Adding New Dependencies
-
+Dependencies: `environment.yml` (conda) and `requirements.txt` (pip). Rebuild with:
 ```bash
-conda env export --no-builds | grep -v "^prefix:" > environment.yml  # after conda install
-pip freeze > requirements.txt                                         # after pip install
+conda env create -f environment.yml   # full rebuild
+pip install -r requirements.txt       # pip deps only
 ```
 
 ## API Keys
@@ -39,7 +26,6 @@ Required: `GOOGLE_API_KEY` (starts with `AIza…`). Optional overrides: `GEMINI_
 ```
 Unifix/
 ├── .env                          ← API keys (gitignored)
-├── .gitignore
 ├── proxy.py                      ← Dev proxy for API key injection (port 8787)
 ├── workorder_processing/
 │   ├── main.py                   ← CLI entry point
@@ -52,13 +38,26 @@ Unifix/
 │   │   └── crypto.py             ← Fernet encrypt/decrypt for output files
 │   ├── schemas/
 │   │   └── work_order_v1.json    ← Canonical JSON schema (13 required string fields)
+│   ├── db/
+│   │   └── reference_data.py     ← Mock reference data (workers, companies, locations, equipment, parts)
+│   ├── validator/
+│   │   ├── models.py             ← MatchStatus, OverallStatus, FieldResult, ValidationResult
+│   │   ├── fuzzy_resolver.py     ← rapidfuzz multi-algorithm ensemble per field type
+│   │   ├── time_validator.py     ← Clock time + duration normalisation
+│   │   ├── resolution.py         ← PASS / REVIEW / FAIL aggregation
+│   │   └── work_order_validator.py ← Orchestrator: validate_work_order()
+│   ├── tests/
+│   │   ├── conftest.py           ← sys.path fix for pytest
+│   │   ├── test_fuzzy_resolver.py ← 68 tests (workers, companies, locations, equipment, parts, time)
+│   │   └── test_edge_cases.py    ← 159 tests (12 categories: whitespace, typos, ambiguity, injection, etc.)
 │   ├── audio/
-│   │   ├── test_audio.wav        ← Sample audio for testing
-│   │   └── docs/
-│   │       └── IMPLEMENTATION_PLAN.md
+│   │   └── test_audio.wav        ← Sample audio for testing
 │   ├── test_database/
 │   │   ├── database.py           ← SQLite FTS5 reference data + fuzzy matching
 │   │   └── test_data.db          ← Seeded DB (equipment, companies, locations, parts)
+│   ├── test_data/
+│   │   ├── edge_case_work_order.json        ← Noisy work order (partial names, typos, short forms)
+│   │   └── edge_case_work_order_clean.json  ← Clean reference work order (all exact matches)
 │   └── outputs/                  ← Encrypted .json.enc output files (gitignored)
 ```
 
@@ -98,80 +97,100 @@ python main.py audio/test_audio.wav -o outputs/ -p   # with output dir + plainte
 `start_time`, `end_time`, `total_time_spent`, `future_recommendations`, `remaining_tasks`,
 `worker`, `company`, `location` — all required strings.
 
-## Test Database (Fuzzy Matching)
+## Post-Extraction Validator
 
-SQLite with FTS5 full-text search. 81 seeded records across four tables:
+Resolves Gemini output against a reference database after extraction. Run from `workorder_processing/`.
 
-| Table | Records | Example |
-|---|---|---|
-| `equipment` | 26 | Caterpillar D6T Dozer, Komatsu PC200 Excavator |
-| `companies` | 20 | Caterpillar Inc., United Rentals, Summit Mining Corp |
-| `locations` | 15 | Denver Maintenance Yard, Houston Heavy Equipment Depot |
-| `parts` | 20 | CAT-6T-7489 (track chain), KOM-PC200-3310 (seal kit) |
+**Field routing:**
+- **Fuzzy DB match** (`rapidfuzz` ensemble): `worker`, `company`, `location`, `vehicle_equipment`, `parts_used`
+- **Time format** (normalised to `HH:MM` / `Xh Ym`): `start_time`, `end_time`, `total_time_spent`
+- **Pass-through** (free text): `reported_problem`, `diagnosis_cause`, `work_performed`, `future_recommendations`, `remaining_tasks`
 
-### Usage
+**Resolution outcomes:** `EXACT` (≥100) → `HIGH_CONFIDENCE` (≥85) → `LOW_CONFIDENCE` (60–84) → `NO_MATCH` (<60).
+Overall status: `PASS` / `REVIEW` (any LOW_CONF) / `FAIL` (NO_MATCH on required fields).
+
+```python
+from validator.work_order_validator import validate_work_order
+result = validate_work_order(extracted_json)
+print(result.overall_status, result.unresolved_fields)
+```
+
+`db/reference_data.py` is the mock store — replace its getter functions with real DB queries in production.
+
+## Fuzzy Matching Evaluation
+
+Full evaluation report: `FUZZY_MATCHING_EVALUATION.md`
+
+### Known Bugs
+
+| # | Severity | Bug | Location |
+|---|---|---|---|
+| 1 | Low | Whitespace degrades EXACT → HIGH_CONF (no `.strip()` before scoring) | `validator/fuzzy_resolver.py:_score_algorithms()` |
+| 2 | Medium | `30m` duration shorthand not recognised (regex requires `in` after `m`) | `validator/time_validator.py:_DURATION_PATTERNS[2]` |
+| 3 | Low | Durations >99h fail (`\d{1,2}` limits hours) | `validator/time_validator.py:_DURATION_PATTERNS[3]` |
+| 4 | **High** | Empty required fields don't fail validation (`EMPTY` not in failure check) | `validator/resolution.py:compute_overall_status()` |
+
+### Scoring Model
+
+Each fuzzy field uses a weighted multi-algorithm ensemble from rapidfuzz:
+- `worker`: Jaro-Winkler (0.40), token_sort_ratio (0.35), ratio (0.25)
+- `company`: token_set_ratio (0.40), WRatio (0.35), partial_ratio (0.25)
+- `location`: partial_ratio (0.40), token_set_ratio (0.35), token_sort_ratio (0.25)
+- `vehicle_equipment`: token_set_ratio (0.40), partial_ratio (0.30), ratio (0.30)
+- `parts_used`: token_set_ratio (0.45), WRatio (0.35), partial_ratio (0.20)
+
+Thresholds: EXACT ≥ 100, HIGH_CONF ≥ 85, LOW_CONF ≥ 60, NO_MATCH < 60.
+Parts use **minimum** per-token score for overall status.
+
+## Test Database (Legacy SQLite)
+
+SQLite with FTS5 full-text search. 81 seeded records across `equipment`, `companies`, `locations`, `parts`.
 
 ```bash
-# Seed the database (idempotent)
-python test_database/database.py --seed
-
-# Test fuzzy matching
+python test_database/database.py --seed                      # seed (idempotent)
 python test_database/database.py --query equipment "cat dozer"
 ```
 
-```python
-from test_database.database import get_db, fuzzy_match
-
-conn = get_db()
-matches = fuzzy_match(conn, "equipment", "Cat D6T", threshold=0.4)
-# → [{"name": "Caterpillar D6T Dozer", "score": 0.588, ...}, ...]
-conn.close()
-```
-
-Fuzzy matching uses FTS5 prefix queries with a `difflib.SequenceMatcher` fallback (pure stdlib,
-no extra deps). The `threshold` parameter controls minimum similarity (0.0–1.0).
+Uses `difflib.SequenceMatcher` (stdlib only). The `validator/` package supersedes this for
+post-extraction validation; `test_database/` remains as a standalone reference lookup tool.
 
 ## Proxy (Development)
 
-`proxy.py` runs a local API key injector on port 8787. It sits between the app and
-`generativelanguage.googleapis.com`, swapping a dummy key for the real one so the key never
-enters the codebase. Run with:
-
+`proxy.py` injects the real API key on port 8787, keeping it out of the codebase. Run with:
 ```bash
 python proxy.py
 ```
 
-Configure the Gemini client to point at `http://localhost:8787` with a dummy key. The current
-`main.py` uses the key directly — the proxy is optional and kept for future Vertex AI use.
-
 ## Common Tasks
 
-### Process an audio file
 ```bash
+# Process an audio file
 cd workorder_processing && python main.py audio/test_audio.wav -p
-```
 
-### Change the model
-```bash
+# Change the model
 GEMINI_MODEL=gemini-2.5-pro python main.py audio/test_audio.wav
-```
 
-### Add a reference record to the test database
-```bash
-sqlite3 test_database/test_data.db "INSERT INTO equipment (name, category, manufacturer) VALUES ('New Dozer', 'dozer', 'BrandX');"
-sqlite3 test_database/test_data.db "INSERT INTO equipment_fts(equipment_fts) VALUES ('rebuild');"
-```
+# Run the validator test suite (68 original + 159 edge case = 227 total)
+cd workorder_processing && python -m pytest tests/ -v
 
-### Validate an audio file without sending to Gemini
-```python
-from processor.validator import validate_audio_file
-meta = validate_audio_file("audio/test_audio.wav")
-print(meta["detected_mime"], meta["size_bytes"])
-```
+# Run only edge case tests
+cd workorder_processing && python -m pytest tests/test_edge_cases.py -v
 
-### Decrypt an output file
-```python
-from processor.crypto import read_encrypted_json
-data = read_encrypted_json("outputs/test_audio.json.enc")
-print(data["extracted_data"])
+# Run the noisy test work order through the full validator
+cd workorder_processing && python -c "
+import json
+from validator.work_order_validator import validate_work_order
+with open('test_data/edge_case_work_order.json') as f:
+    order = json.load(f)
+result = validate_work_order(order)
+print(f'Status: {result.overall_status.value}')
+print(f'Unresolved: {result.unresolved_fields}')
+print(f'Review: {result.review_fields}')
+"
+
+# Validate an audio file without sending to Gemini
+python -c "from processor.validator import validate_audio_file; print(validate_audio_file('audio/test_audio.wav'))"
+
+# Decrypt an output file
+python -c "from processor.crypto import read_encrypted_json; import json; print(json.dumps(read_encrypted_json('outputs/test_audio.json.enc'), indent=2))"
 ```

@@ -1,0 +1,15 @@
+{
+  "vehicle_equipment":      "TRK001",
+  "reported_problem":       "Engine overheating and making strange hissing noise from the radiator area. Driver reported temp gauge spiking to red zone on highway.",
+  "diagnosis_cause":        "Radiator cap seal degraded, coolant leak at upper hose clamp. Thermostat stuck partially closed causing restricted flow.",
+  "work_performed":         "Replaced radiator cap, re-clamped upper hose, replaced thermostat assembly, pressure-tested system to 16 PSI for 15 min with no drops. Topped off coolant.",
+  "parts_used":             "Oil Filter, Air Filter, Coolant",
+  "start_time":             "8:30",
+  "end_time":               "11:30 AM",
+  "total_time_spent":       "3h30m",
+  "future_recommendations": "Monitor coolant level weekly for 1 month. Check hose clamps at next PM service. Consider replacing upper hose if cracking visible at next inspection.",
+  "remaining_tasks":        "Need to order replacement upper radiator hose (not in stock). Schedule follow-up in 2 weeks.",
+  "worker":                 "James Hartwell",
+  "company":                "Hartwell Industrial",
+  "location":               "Bay 1"
+}
