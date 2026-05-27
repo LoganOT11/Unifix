@@ -380,20 +380,17 @@ class TestTimeEdgeCases:
         r = validate_time_field("total_time_spent", raw)
         assert r.status in (MatchStatus.TIME_INVALID, MatchStatus.EMPTY)
 
-    def test_duration_30m_shorthand_fails(self):
-        """BUG: '30m' is common shorthand but regex requires 'min' not just 'm'."""
+    def test_duration_30m_shorthand_recognized(self):
+        """FIXED: '30m' shorthand is now recognised and normalised to '0h 30m'."""
         r = validate_time_field("total_time_spent", "30m")
-        # Currently fails — document the behavior
-        assert r.status == MatchStatus.TIME_INVALID, (
-            "Known issue: '30m' shorthand not recognized by duration regex"
-        )
+        assert r.status == MatchStatus.TIME_VALID
+        assert r.resolved_value == "0h 30m"
 
-    def test_duration_100_plus_hours_fails(self):
-        """BUG: Duration regex only accepts 1-2 digit hours via HH:MM pattern."""
+    def test_duration_100_plus_hours_passes(self):
+        """FIXED: Duration regex now uses \\d+ for hours so values >99 hours are accepted."""
         r = validate_time_field("total_time_spent", "100:30")
-        assert r.status == MatchStatus.TIME_INVALID, (
-            "Known issue: durations >99 hours fail the HH:MM regex (\\d{1,2})"
-        )
+        assert r.status == MatchStatus.TIME_VALID
+        assert r.resolved_value == "100h 30m"
 
     def test_duration_1h_no_minutes(self):
         r = validate_time_field("total_time_spent", "1h")
@@ -778,7 +775,7 @@ class TestScoreThresholds:
         assert r.status == MatchStatus.EXACT
 
     def test_high_conf_above_85(self):
-        r = resolve_field("worker", "  James Hartwell  ")  # whitespace reduces score
+        r = resolve_field("worker", "James Hartwal")  # slight typo → HIGH_CONF
         assert r.score >= THRESHOLD_HIGH
         assert r.status == MatchStatus.HIGH_CONF
 
@@ -805,40 +802,40 @@ class TestScoreThresholds:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class TestKnownBugs:
-    """Document known issues. These tests PASS by asserting the current (buggy) behavior."""
+    """Previously known bugs — now fixed. These tests assert the correct post-fix behavior."""
 
-    def test_whitespace_degrades_exact_to_high_conf(self):
+    def test_whitespace_does_not_degrade_exact_score(self):
         """
-        BUG: Leading/trailing whitespace in raw_value causes EXACT matches to
-        become HIGH_CONFIDENCE because _score_algorithms compares .lower() but
-        doesn't strip() before scoring. The resolved_value is still correct,
-        but the status is wrong.
+        FIXED: Leading/trailing whitespace in raw_value no longer degrades EXACT
+        matches to HIGH_CONFIDENCE. _score_algorithms now calls .strip() before
+        scoring so '  James Hartwell  ' resolves to EXACT.
         """
         r = resolve_field("worker", "  James Hartwell  ")
-        assert r.status == MatchStatus.HIGH_CONF  # Should be EXACT
-        assert r.resolved_value == "James Hartwell"  # This part is correct
+        assert r.status == MatchStatus.EXACT
+        assert r.resolved_value == "James Hartwell"
 
-    def test_duration_30m_shorthand_not_recognized(self):
+    def test_duration_30m_shorthand_recognized(self):
         """
-        BUG: The regex r'(\\d+)\\s*m(?:in(?:ute)?s?)$' requires 'm' followed
-        by 'in'. The shorthand '30m' (no 'in') fails. Should accept bare 'm'.
+        FIXED: The duration regex now accepts bare 'm' as a minutes suffix so
+        '30m' is recognised and normalised to '0h 30m'.
         """
         r = validate_time_field("total_time_spent", "30m")
-        assert r.status == MatchStatus.TIME_INVALID
+        assert r.status == MatchStatus.TIME_VALID
+        assert r.resolved_value == "0h 30m"
 
-    def test_duration_100_hours_fails(self):
+    def test_duration_100_hours_passes(self):
         """
-        BUG: Duration HH:MM pattern uses \\d{1,2} so hours >99 fail.
-        Should use \\d+ for the hours group.
+        FIXED: Duration HH:MM pattern now uses \\d+ for the hours group so
+        values >99 hours are accepted (e.g. '100:30' → '100h 30m').
         """
         r = validate_time_field("total_time_spent", "100:30")
-        assert r.status == MatchStatus.TIME_INVALID
+        assert r.status == MatchStatus.TIME_VALID
+        assert r.resolved_value == "100h 30m"
 
-    def test_none_required_field_does_not_fail(self):
+    def test_empty_required_fields_fail(self):
         """
-        BUG/DESIGN: None values for required fields (worker, company, etc.)
-        become EMPTY status, which is NOT in the failure check. A completely
-        empty required field should arguably fail validation.
+        FIXED: EMPTY status is now included in the failure check so a work order
+        where all required fields are empty strings correctly returns FAIL.
         """
         order = {
             "vehicle_equipment": "", "reported_problem": "", "diagnosis_cause": "",
@@ -847,5 +844,4 @@ class TestKnownBugs:
             "worker": "", "company": "", "location": "",
         }
         r = validate_work_order(order)
-        # All EMPTY → no NO_MATCH/TIME_INVALID → PASS (arguably wrong)
-        assert r.overall_status == OverallStatus.PASS
+        assert r.overall_status == OverallStatus.FAIL

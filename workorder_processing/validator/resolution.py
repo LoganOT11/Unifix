@@ -15,7 +15,7 @@ def compute_overall_status(
     review:     list[str] = []
 
     for fname, result in field_results.items():
-        if result.status in (MatchStatus.NO_MATCH, MatchStatus.TIME_INVALID):
+        if result.status in (MatchStatus.NO_MATCH, MatchStatus.TIME_INVALID, MatchStatus.EMPTY):
             if fname in REQUIRED_RESOLVED_FIELDS:
                 unresolved.append(fname)
             else:

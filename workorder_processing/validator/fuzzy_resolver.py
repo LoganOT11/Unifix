@@ -48,7 +48,7 @@ def _score_algorithms(query: str, candidate: str, weights: dict) -> tuple[float,
     composite = 0.0
 
     for algo_name, weight in weights.items():
-        score = algo_map[algo_name](query.lower(), candidate.lower())
+        score = algo_map[algo_name](query.strip().lower(), candidate.strip().lower())
         individual[algo_name] = round(score, 2)
         composite += score * weight
 

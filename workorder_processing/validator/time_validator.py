@@ -16,8 +16,8 @@ _PATTERNS = [
 _DURATION_PATTERNS = [
     re.compile(r'(\d+)\s*h(?:our)?s?\s*(\d+)\s*m(?:in)?', re.I),
     re.compile(r'(\d+)\s*h(?:our)?s?$', re.I),
-    re.compile(r'(\d+)\s*m(?:in(?:ute)?s?)$', re.I),
-    re.compile(r'^(\d{1,2}):(\d{2})$'),
+    re.compile(r'(\d+)\s*m(?:in(?:ute)?s?)?$', re.I),
+    re.compile(r'^(\d+):(\d{2})$'),
 ]
 
 

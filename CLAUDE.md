@@ -121,15 +121,6 @@ print(result.overall_status, result.unresolved_fields)
 
 Full evaluation report: `FUZZY_MATCHING_EVALUATION.md`
 
-### Known Bugs
-
-| # | Severity | Bug | Location |
-|---|---|---|---|
-| 1 | Low | Whitespace degrades EXACT → HIGH_CONF (no `.strip()` before scoring) | `validator/fuzzy_resolver.py:_score_algorithms()` |
-| 2 | Medium | `30m` duration shorthand not recognised (regex requires `in` after `m`) | `validator/time_validator.py:_DURATION_PATTERNS[2]` |
-| 3 | Low | Durations >99h fail (`\d{1,2}` limits hours) | `validator/time_validator.py:_DURATION_PATTERNS[3]` |
-| 4 | **High** | Empty required fields don't fail validation (`EMPTY` not in failure check) | `validator/resolution.py:compute_overall_status()` |
-
 ### Scoring Model
 
 Each fuzzy field uses a weighted multi-algorithm ensemble from rapidfuzz:
@@ -177,16 +168,7 @@ cd workorder_processing && python -m pytest tests/ -v
 cd workorder_processing && python -m pytest tests/test_edge_cases.py -v
 
 # Run the noisy test work order through the full validator
-cd workorder_processing && python -c "
-import json
-from validator.work_order_validator import validate_work_order
-with open('test_data/edge_case_work_order.json') as f:
-    order = json.load(f)
-result = validate_work_order(order)
-print(f'Status: {result.overall_status.value}')
-print(f'Unresolved: {result.unresolved_fields}')
-print(f'Review: {result.review_fields}')
-"
+cd workorder_processing && python -c "from validator.work_order_validator import validate_work_order; ..."
 
 # Validate an audio file without sending to Gemini
 python -c "from processor.validator import validate_audio_file; print(validate_audio_file('audio/test_audio.wav'))"
