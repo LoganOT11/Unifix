@@ -29,12 +29,12 @@ def validate_api_key(key: str) -> None:
 # ---------------------------------------------------------------------------
 # Client factory
 # ---------------------------------------------------------------------------
-def create_client(api_key: str, timeout: int = 120) -> genai.Client:
-    """Build a genai.Client with pinned timeout and validated key."""
+def create_client(api_key: str, timeout_ms: int = 600_000) -> genai.Client:
+    """Build a genai.Client with pinned timeout (ms) and validated key."""
     validate_api_key(api_key)
     return genai.Client(
         api_key=api_key,
-        http_options={"timeout": timeout},
+        http_options=types.HttpOptions(timeout=timeout_ms),
     )
 
 
