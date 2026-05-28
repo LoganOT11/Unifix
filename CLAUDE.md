@@ -54,6 +54,7 @@ Unifix/
 │   │   └── work_order_validator.py   ← Orchestrator: validate_work_order()
 │   ├── tests/                        ← 321 tests across 4 files
 │   ├── audio/test_audio.wav          ← Sample audio
+│   ├── images/                       ← Sample images
 │   ├── test_database/                ← Legacy SQLite FTS5 lookup (superseded by validator/)
 │   └── outputs/                      ← Encrypted .json.enc output files (gitignored)
 ```
