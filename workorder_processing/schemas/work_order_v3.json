@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Work Order Extraction — Field Service Image",
+  "description": "Structured data extracted from a handwritten field service work order form.",
+  "type": "object",
+  "required": [
+    "company",
+    "client",
+    "location",
+    "date",
+    "worker",
+    "travel",
+    "labour_summary",
+    "expenses",
+    "tasks",
+    "future_recommendations",
+    "remaining_tasks"
+  ],
+  "properties": {
+    "company": {
+      "type": ["string", "null"],
+      "description": "Name of the maintenance company issuing the work order."
+    },
+    "client": {
+      "type": ["string", "null"],
+      "description": "Client or account name as written on the form."
+    },
+    "location": {
+      "type": ["string", "null"],
+      "description": "City or site where the work was performed."
+    },
+    "date": {
+      "type": ["string", "null"],
+      "description": "Date of the work order. Format: YYYY/MM/DD."
+    },
+    "worker": {
+      "type": ["string", "null"],
+      "description": "Full name of the technician as written on the form."
+    },
+    "travel": {
+      "type": "object",
+      "description": "Travel legs recorded in the KM section of the form.",
+      "required": ["legs", "total_km"],
+      "properties": {
+        "legs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["depart", "destination", "km"],
+            "properties": {
+              "depart":      { "type": ["string", "null"] },
+              "destination": { "type": ["string", "null"] },
+              "km":          { "type": ["number", "null"] }
+            }
+          }
+        },
+        "total_km": { "type": ["number", "null"] }
+      }
+    },
+    "labour_summary": {
+      "type": "object",
+      "description": "Header-level labour block (Début / Fin / Total) summarising the full shift.",
+      "required": ["start", "end", "total_hours"],
+      "properties": {
+        "start":       { "type": ["string", "null"], "description": "Shift start time, e.g. '5h'." },
+        "end":         { "type": ["string", "null"], "description": "Shift end time, e.g. '7h'." },
+        "total_hours": { "type": ["string", "null"], "description": "Total hours as written, e.g. '14h'." }
+      }
+    },
+    "expenses": {
+      "type": "object",
+      "description": "Dépenses section of the form.",
+      "properties": {
+        "repas":    { "type": ["string", "null"] },
+        "logement": { "type": ["string", "null"] },
+        "avion":    { "type": ["string", "null"] },
+        "autres":   { "type": ["string", "null"] },
+        "total":    { "type": ["string", "null"] }
+      }
+    },
+    "tasks": {
+      "type": "array",
+      "description": "Ordered list of work items from the central task table on the form.",
+      "items": {
+        "type": "object",
+        "required": ["unit", "time", "description", "work_order_ref"],
+        "properties": {
+          "unit": {
+            "type": ["string", "null"],
+            "description": "Equipment or asset unit number from the Unité column."
+          },
+          "time": {
+            "type": "object",
+            "required": ["start", "end", "total"],
+            "properties": {
+              "start": { "type": ["string", "null"], "description": "Task start time as written." },
+              "end":   { "type": ["string", "null"], "description": "Task end time as written." },
+              "total": { "type": ["string", "null"], "description": "Duration as written, e.g. '3h', '.30'." }
+            }
+          },
+          "description": {
+            "type": ["string", "null"],
+            "description": "Verbatim description of work performed for this task."
+          },
+          "work_order_ref": {
+            "type": ["string", "null"],
+            "description": "BT- or work-ticket reference number associated with this task."
+          }
+        }
+      }
+    },
+    "future_recommendations": {
+      "type": ["string", "null"],
+      "description": "Any follow-up actions or warnings noted on the form. Use null if none."
+    },
+    "remaining_tasks": {
+      "type": ["string", "null"],
+      "description": "Work explicitly deferred to a future visit. Use null if none."
+    },
+    "company__confidence":   { "type": "string", "enum": ["HIGH", "MEDIUM", "LOW"] },
+    "client__confidence":    { "type": "string", "enum": ["HIGH", "MEDIUM", "LOW"] },
+    "location__confidence":  { "type": "string", "enum": ["HIGH", "MEDIUM", "LOW"] },
+    "worker__confidence":    { "type": "string", "enum": ["HIGH", "MEDIUM", "LOW"] },
+    "date__confidence":      { "type": "string", "enum": ["HIGH", "MEDIUM", "LOW"] }
+  }
+}

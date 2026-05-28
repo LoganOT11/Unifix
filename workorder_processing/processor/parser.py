@@ -18,9 +18,13 @@ logger = logging.getLogger("work_order_processor")
 # ---------------------------------------------------------------------------
 # JSON Schema for extracted work-order data
 # ---------------------------------------------------------------------------
-_SCHEMA_PATH = Path(__file__).resolve().parent.parent / "schemas" / "work_order_v1.json"
-with open(_SCHEMA_PATH, "r", encoding="utf-8") as _fh:
-    WORK_ORDER_SCHEMA = json.load(_fh)
+_SCHEMAS_DIR = Path(__file__).resolve().parent.parent / "schemas"
+
+def _load_schema(version: str) -> dict:
+    with open(_SCHEMAS_DIR / f"work_order_{version}.json", "r", encoding="utf-8") as fh:
+        return json.load(fh)
+
+WORK_ORDER_SCHEMA = _load_schema("v1")
 
 
 # ---------------------------------------------------------------------------
@@ -49,14 +53,15 @@ def parse_ai_json(raw_text: str) -> dict:
 # ---------------------------------------------------------------------------
 # Schema validation
 # ---------------------------------------------------------------------------
-def validate_extracted_data(data: dict) -> None:
+def validate_extracted_data(data: dict, schema_version: str = "v1") -> None:
     """
-    Validate *data* against the work-order JSON schema.
+    Validate *data* against the named work-order JSON schema.
 
     Raises SchemaValidationError with a human-readable message on mismatch.
     """
+    schema = WORK_ORDER_SCHEMA if schema_version == "v1" else _load_schema(schema_version)
     try:
-        jsonschema.validate(instance=data, schema=WORK_ORDER_SCHEMA)
+        jsonschema.validate(instance=data, schema=schema)
     except jsonschema.ValidationError as exc:
         raise SchemaValidationError(str(exc)) from exc
 
@@ -71,6 +76,7 @@ def build_response_envelope(
     model_id: str,
     validation_result=None,
     veracity_info: dict | None = None,
+    schema_version: str = "1.0",
 ) -> dict:
     """
     Wrap the extracted data with audit metadata:
@@ -93,7 +99,7 @@ def build_response_envelope(
         )
 
     envelope = {
-        "schema_version": "1.0",
+        "schema_version": schema_version,
         "processed_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "source_file": {
             "name": os.path.basename(audio_path),

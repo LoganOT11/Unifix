@@ -9,6 +9,7 @@ from google.genai import types
 from .gemini_client import call_gemini_generic, create_client
 from .image_preprocessor import preprocess_image
 from .parser import parse_ai_json, extract_confidence_markers
+from .prompt_loader import load_prompt
 
 ALLOWED_IMAGE_MIMES = {
     "image/jpeg", "image/jpg", "image/png",
@@ -18,45 +19,10 @@ ALLOWED_IMAGE_MIMES = {
 
 MAX_IMAGE_SIZE_BYTES = 20 * 1024 * 1024
 
-IMAGE_EXTRACTION_PROMPT = """
-<system_role>
-You are a precise data extraction engine for handwritten mechanical and maintenance
-work order forms. Extract structured data from the image with high accuracy.
-</system_role>
-
-<image_reading_guidance>
-Read ALL text visible in the image, including headers, labels, and pre-printed fields.
-If handwriting is unclear, make your best attempt and mark confidence as LOW.
-Common form sections and their schema mappings:
-  "Technician" / "Mechanic" / "Performed by"  → worker
-  "Company" / "Contractor" / "Employer"        → company
-  "Location" / "Site" / "Workshop"             → location
-  "Unit #" / "Asset" / "Vehicle" / "Equipment" → vehicle_equipment
-  "Fault" / "Complaint" / "Problem reported"   → reported_problem
-  "Cause" / "Diagnosis" / "Root cause"         → diagnosis_cause
-  "Work done" / "Actions taken" / "Repair"     → work_performed
-  "Parts" / "Materials used"                   → parts_used
-  "Start" / "Time in" / "Begin"                → start_time
-  "Finish" / "Time out" / "End"                → end_time
-  "Total time" / "Hours"                       → total_time_spent
-  "Recommendations" / "Notes" / "Follow-up"    → future_recommendations
-  "Deferred" / "Outstanding" / "Remaining"     → remaining_tasks
-</image_reading_guidance>
-
-<extraction_rules>
-1. Extract only what is legibly written. Use "" for blank or illegible fields.
-2. Preserve original spelling for names, part numbers, and equipment tags.
-3. Return ONLY the JSON object — no preamble, no markdown fences, no explanation.
-</extraction_rules>
-
-<confidence_markers>
-For worker, company, location, vehicle_equipment, and parts_used, append:
-  "field_name__confidence": "HIGH" | "MEDIUM" | "LOW"
-HIGH = clearly printed or legibly handwritten
-MEDIUM = mostly legible but some characters uncertain
-LOW = significant portions illegible or inferred
-</confidence_markers>
-"""
+_PROMPT_REGISTRY = {
+    "v1": ("image_extraction_v1", None, "simplified"),
+    "v3": ("image_extraction_v3", "v3", "full"),
+}
 
 _EXT_MIME = {
     ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
@@ -94,9 +60,13 @@ def process_image(
     client,
     model_id: str,
     preprocess: bool = True,
+    prompt_version: str = "v3",
 ) -> tuple[dict, dict, object, object]:
     """
     Process a handwritten work order image through Gemini Vision.
+
+    prompt_version selects the prompt+schema pair: "v3" (default, Uni-Fix form)
+    or "v1" (legacy generic form).
 
     Returns:
         (work_order_dict, confidence_markers, raw_response, preprocess_result)
@@ -112,12 +82,15 @@ def process_image(
         image_bytes = preprocess_result.image_bytes
         mime_type = preprocess_result.mime_type
 
+    prompt_name, schema_version, schema_format = _PROMPT_REGISTRY[prompt_version]
+    prompt = load_prompt(prompt_name, schema_version=schema_version, schema_format=schema_format)
+
     image_part = types.Part.from_bytes(data=image_bytes, mime_type=mime_type)
 
     response = call_gemini_generic(
         client=client,
         model_id=model_id,
-        contents=[image_part, IMAGE_EXTRACTION_PROMPT],
+        contents=[image_part, prompt],
         config=types.GenerateContentConfig(
             response_mime_type="application/json",
             temperature=0.2,

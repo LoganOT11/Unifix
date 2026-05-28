@@ -211,7 +211,7 @@ def process_image_file(file_path: str, output_dir: str | None = None) -> dict:
     )
 
     work_order, confidences, response, preprocess_result = _process_image_gemini(
-        abs_path, client, MODEL_ID, preprocess=True,
+        abs_path, client, MODEL_ID, preprocess=True, prompt_version="v3",
     )
     if preprocess_result:
         logger.info(
@@ -220,22 +220,16 @@ def process_image_file(file_path: str, output_dir: str | None = None) -> dict:
             preprocess_result.operations_applied,
         )
 
-    validate_extracted_data(work_order)
+    validate_extracted_data(work_order, schema_version="v3")
     logger.info("Extracted data passed schema validation.")
-
-    validation_result = validate_work_order(work_order, confidences)
-    logger.info(
-        "Validation: %s  (unresolved=%s, review=%s)",
-        validation_result.overall_status.value,
-        validation_result.unresolved_fields,
-        validation_result.review_fields,
-    )
 
     veracity_info: dict = {"ran": False}
 
-    envelope = build_response_envelope(abs_path, response, work_order, MODEL_ID,
-                                       validation_result=validation_result,
-                                       veracity_info=veracity_info)
+    envelope = build_response_envelope(
+        abs_path, response, work_order, MODEL_ID,
+        veracity_info=veracity_info,
+        schema_version="3.0",
+    )
     if preprocess_result:
         envelope["preprocessing"] = {
             "quality_before": preprocess_result.quality_before.value,
@@ -290,10 +284,19 @@ def main():
 
         # Print a summary to stdout
         ed = envelope.get("extracted_data", {})
-        print(f"\n📋  Summary  —  {ed.get('vehicle_equipment', 'N/A')}")
-        print(f"   Problem   : {ed.get('reported_problem', 'N/A')[:80]}")
-        print(f"   Time      : {ed.get('start_time', '?')} → {ed.get('end_time', '?')} "
-              f"({ed.get('total_time_spent', '?')})")
+        if args.mode == "image":
+            ls = ed.get("labour_summary") or {}
+            tasks = ed.get("tasks") or []
+            print(f"\n📋  Summary  —  {ed.get('worker', 'N/A')} / {ed.get('client', 'N/A')}")
+            print(f"   Location  : {ed.get('location', 'N/A')}  |  Date: {ed.get('date', 'N/A')}")
+            print(f"   Time      : {ls.get('start', '?')} → {ls.get('end', '?')} "
+                  f"({ls.get('total_hours', '?')})")
+            print(f"   Tasks     : {len(tasks)}")
+        else:
+            print(f"\n📋  Summary  —  {ed.get('vehicle_equipment', 'N/A')}")
+            print(f"   Problem   : {ed.get('reported_problem', 'N/A')[:80]}")
+            print(f"   Time      : {ed.get('start_time', '?')} → {ed.get('end_time', '?')} "
+                  f"({ed.get('total_time_spent', '?')})")
         print(f"   Finish    : {envelope.get('finish_reason', 'UNKNOWN')}")
 
         # Optional plaintext sidecar
