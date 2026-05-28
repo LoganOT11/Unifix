@@ -39,8 +39,9 @@ Thumbs.db
 *.enc
 outputs/
 
-# Audio examples (user data)
+# Examples (user data)
 workorder_processing/audio/
+workorder_processing/images/
 
 # Conda
 conda-bld/
