@@ -9,6 +9,7 @@ from pathlib import Path
 
 from google import genai
 from google.genai import types
+from google.genai.types import HttpOptions
 
 from .exceptions import APICallError
 
@@ -18,11 +19,13 @@ logger = logging.getLogger("work_order_processor")
 # API key helpers
 # ---------------------------------------------------------------------------
 def validate_api_key(key: str) -> None:
-    """Basic format check — Google AI keys start with 'AIza' and are 39 chars."""
-    if not re.match(r"^AIza[0-9A-Za-z_\-]{35}$", key):
+    """Basic format check — accepts legacy AIza... keys and new AQ.Ab8... keys."""
+    legacy = re.match(r"^AIza[0-9A-Za-z_\-]{35}$", key)
+    new_format = re.match(r"^AQ\.[0-9A-Za-z_\-]{2}[0-9A-Za-z_\-]+$", key)
+    if not (legacy or new_format):
         raise RuntimeError(
             "GOOGLE_API_KEY format looks invalid. "
-            "Expected format: AIza followed by 35 alphanumeric characters."
+            "Expected legacy format (AIza + 35 chars) or new format (AQ. prefix)."
         )
 
 
@@ -34,7 +37,7 @@ def create_client(api_key: str, timeout_ms: int = 600_000) -> genai.Client:
     validate_api_key(api_key)
     return genai.Client(
         api_key=api_key,
-        http_options=types.HttpOptions(timeout=timeout_ms),
+        http_options=HttpOptions(api_version="v1", timeout=timeout_ms),
     )
 
 

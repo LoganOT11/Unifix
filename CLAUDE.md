@@ -19,14 +19,13 @@ pip install -r requirements.txt       # pip deps only
 
 Copy `.env` and fill in your keys. The `.env` file is gitignored and never committed.
 
-Required: `GOOGLE_API_KEY` (starts with `AIza…`). Optional overrides: `GEMINI_MODEL`, `PROCESSOR_LOG`, `ENCRYPTION_KEY_PATH`.
+Required: `GOOGLE_API_KEY` (legacy `AIza…` or new `AQ.…` format). Required for `AQ.`-format keys: `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION`, `GOOGLE_GENAI_USE_VERTEXAI`. Optional overrides: `GEMINI_MODEL`, `PROCESSOR_LOG`, `ENCRYPTION_KEY_PATH`.
 
 ## Project Structure
 
 ```
 Unifix/
 ├── .env                          ← API keys (gitignored)
-├── proxy.py                      ← Dev proxy for API key injection (port 8787)
 ├── workorder_processing/
 │   ├── main.py                   ← CLI entry point
 │   ├── processor/
@@ -102,7 +101,10 @@ python main.py audio/test_audio.wav -o outputs/ -p         # with output dir + p
 
 | Variable | Default | Description |
 |---|---|---|
-| `GOOGLE_API_KEY` | *(required)* | Google AI API key |
+| `GOOGLE_API_KEY` | *(required)* | Google AI API key (legacy `AIza…` or new `AQ.…`) |
+| `GOOGLE_CLOUD_PROJECT` | *(required for AQ)* | Vertex AI project ID |
+| `GOOGLE_CLOUD_LOCATION` | `global` | Vertex AI region |
+| `GOOGLE_GENAI_USE_VERTEXAI` | `True` | Route through Vertex AI endpoint |
 | `GEMINI_MODEL` | `gemini-3.1-flash-lite` | Model ID to use |
 | `PROCESSOR_LOG` | `processor.log` | Audit log file path |
 | `ENCRYPTION_KEY_PATH` | `~/.workorder_processor.key` | Fernet key location |
