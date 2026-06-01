@@ -1,11 +1,11 @@
 """Process handwritten work order images through Gemini Vision."""
 
-import json
 import mimetypes
 import os
 from pathlib import Path
 
 from google.genai import types
+from .exceptions import WorkOrderProcessorError
 from .gemini_client import call_gemini_generic, create_client
 from .image_preprocessor import preprocess_image
 from .parser import parse_ai_json, extract_confidence_markers
@@ -31,27 +31,35 @@ _EXT_MIME = {
 }
 
 
-def detect_image_mime(file_path: str) -> str:
+def detect_image_mime(file_path: str) -> str | None:
+    """Return the MIME type for *file_path*, or None if the type is not recognised."""
     mime, _ = mimetypes.guess_type(file_path)
     if mime in ALLOWED_IMAGE_MIMES:
         return mime
     ext = Path(file_path).suffix.lower()
-    return _EXT_MIME.get(ext, "image/jpeg")
+    return _EXT_MIME.get(ext)
 
 
 def validate_image_file(file_path: str, safe_root: str | None = None) -> dict:
     path = Path(file_path).resolve()
     root = Path(safe_root).resolve() if safe_root else Path.cwd()
-    if not str(path).startswith(str(root)):
-        raise ValueError(f"Path traversal detected: {file_path!r} resolves outside {root}")
-    if not path.exists():
-        raise FileNotFoundError(f"Image file not found: {file_path}")
+    if not path.is_relative_to(root):
+        raise WorkOrderProcessorError(
+            f"Path traversal detected: {file_path!r} resolves outside {root}"
+        )
+    if not path.is_file():
+        raise WorkOrderProcessorError(f"Image file not found: {file_path}")
     size = path.stat().st_size
     if size > MAX_IMAGE_SIZE_BYTES:
-        raise ValueError(f"Image too large: {size:,} bytes (max {MAX_IMAGE_SIZE_BYTES:,})")
+        raise WorkOrderProcessorError(
+            f"Image too large: {size:,} bytes (max {MAX_IMAGE_SIZE_BYTES:,})"
+        )
     mime = detect_image_mime(file_path)
-    if mime not in ALLOWED_IMAGE_MIMES:
-        raise ValueError(f"Unsupported image type: {mime}")
+    if mime is None:
+        raise WorkOrderProcessorError(
+            f"Unsupported image type: '{Path(file_path).suffix or 'unknown'}'. "
+            f"Supported: {sorted(ALLOWED_IMAGE_MIMES)}"
+        )
     return {"path": str(path), "mime_type": mime, "size_bytes": size}
 
 

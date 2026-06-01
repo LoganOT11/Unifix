@@ -23,3 +23,7 @@ class SchemaValidationError(WorkOrderProcessorError):
 
 class CryptoError(WorkOrderProcessorError):
     """Encryption or decryption failed."""
+
+
+class VideoExtractionError(WorkOrderProcessorError):
+    """Audio extraction from a video file failed."""

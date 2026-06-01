@@ -118,7 +118,9 @@ def preprocess_image(image_bytes: bytes, mime_type: str) -> PreprocessResult:
         img = binarize(img)
         ops.append("binarize (adaptive threshold)")
 
-    _, buffer = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 92])
+    ok, buffer = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 92])
+    if not ok or buffer is None:
+        raise ValueError("cv2.imencode failed — could not encode the processed image as JPEG.")
 
     improvement = {
         ImageQuality.GOOD: "Minimal — image was already clean",

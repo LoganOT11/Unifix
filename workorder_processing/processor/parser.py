@@ -30,12 +30,17 @@ WORK_ORDER_SCHEMA = _load_schema("v1")
 # ---------------------------------------------------------------------------
 # Parse AI response
 # ---------------------------------------------------------------------------
-def parse_ai_json(raw_text: str) -> dict:
+def parse_ai_json(raw_text: str | None) -> dict:
     """
     Strip markdown fences and parse JSON from an AI response.
 
-    Raises ResponseParseError if the text is not valid JSON.
+    Raises ResponseParseError if the text is None, empty, or not valid JSON.
     """
+    if not raw_text:
+        raise ResponseParseError(
+            "AI returned an empty or null response — the request may have been "
+            "blocked by safety filters or the model produced no output."
+        )
     cleaned = re.sub(
         r"^```(?:json)?\s*|\s*```$",
         "",
@@ -84,7 +89,7 @@ def build_response_envelope(
       - model & token usage
       - finish reason
     """
-    audio_bytes = open(audio_path, "rb").read()
+    audio_bytes = Path(audio_path).read_bytes()
 
     usage = {}
     if hasattr(raw_response, "usage_metadata") and raw_response.usage_metadata:
@@ -138,8 +143,8 @@ def extract_confidence_markers(raw_json: dict) -> tuple[dict, dict[str, str]]:
 
     for key, value in raw_json.items():
         if key.endswith("__confidence"):
-            field_name = key.replace("__confidence", "")
-            if field_name.endswith("__confidence"):
+            field_name = key.removesuffix("__confidence")
+            if not field_name or field_name.endswith("__confidence"):
                 logger.warning("Skipping malformed confidence key: %s", key)
                 continue
             if value is None:

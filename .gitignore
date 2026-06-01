@@ -42,6 +42,7 @@ outputs/
 # Examples (user data)
 workorder_processing/audio/
 workorder_processing/images/
+workorder_processing/video/
 
 # Conda
 conda-bld/

@@ -225,28 +225,32 @@ class TestPreprocessImage:
 
 class TestValidateImageFile:
 
-    def test_path_traversal_raises_value_error(self):
+    def test_path_traversal_raises_error(self):
         from processor.image_processor import validate_image_file
-        with pytest.raises(ValueError, match="traversal"):
+        from processor.exceptions import WorkOrderProcessorError
+        with pytest.raises(WorkOrderProcessorError, match="traversal"):
             validate_image_file("/etc/passwd", safe_root="/tmp/safe")
 
-    def test_path_traversal_with_dotdot_raises_value_error(self):
+    def test_path_traversal_with_dotdot_raises_error(self):
         from processor.image_processor import validate_image_file
+        from processor.exceptions import WorkOrderProcessorError
         with tempfile.TemporaryDirectory() as tmpdir:
             # Attempt to escape the safe root via ../..
             traversal_path = os.path.join(tmpdir, "..", "..", "etc", "passwd")
-            with pytest.raises(ValueError, match="traversal"):
+            with pytest.raises(WorkOrderProcessorError, match="traversal"):
                 validate_image_file(traversal_path, safe_root=tmpdir)
 
-    def test_missing_file_raises_file_not_found(self):
+    def test_missing_file_raises_error(self):
         from processor.image_processor import validate_image_file
+        from processor.exceptions import WorkOrderProcessorError
         with tempfile.TemporaryDirectory() as tmpdir:
             missing = os.path.join(tmpdir, "nonexistent.jpg")
-            with pytest.raises(FileNotFoundError):
+            with pytest.raises(WorkOrderProcessorError, match="not found"):
                 validate_image_file(missing, safe_root=tmpdir)
 
-    def test_oversized_file_raises_value_error(self):
+    def test_oversized_file_raises_error(self):
         from processor.image_processor import validate_image_file, MAX_IMAGE_SIZE_BYTES
+        from processor.exceptions import WorkOrderProcessorError
         with tempfile.TemporaryDirectory() as tmpdir:
             # Create a real small file
             img_path = os.path.join(tmpdir, "test.jpg")
@@ -255,11 +259,12 @@ class TestValidateImageFile:
             with open(img_path, "wb") as f:
                 f.write(jpeg_bytes)
 
-            # Patch Path.stat to return a huge size
+            # Patch Path.stat to return a huge size, with valid st_mode so is_file() works
             fake_stat = MagicMock()
             fake_stat.st_size = MAX_IMAGE_SIZE_BYTES + 1
+            fake_stat.st_mode = stat.S_IFREG | 0o644
             with patch("processor.image_processor.Path.stat", return_value=fake_stat):
-                with pytest.raises(ValueError, match="too large"):
+                with pytest.raises(WorkOrderProcessorError, match="too large"):
                     validate_image_file(img_path, safe_root=tmpdir)
 
     def test_valid_jpeg_returns_metadata_dict(self):
@@ -444,16 +449,18 @@ class TestProcessImage:
         assert isinstance(preprocess_result, PreprocessResult)
 
     def test_process_image_missing_file_raises(self):
-        """Without patching, a non-existent file inside cwd raises FileNotFoundError."""
+        """Without patching, a non-existent file inside cwd raises WorkOrderProcessorError."""
         from processor.image_processor import process_image
+        from processor.exceptions import WorkOrderProcessorError
         import os
         cwd = os.getcwd()
         missing = os.path.join(cwd, "definitely_does_not_exist_ghost_12345.jpg")
-        with pytest.raises(FileNotFoundError):
+        with pytest.raises(WorkOrderProcessorError, match="not found"):
             process_image(missing, MagicMock(), "gemini-test")
 
     def test_process_image_traversal_raises(self):
-        """A path clearly outside cwd raises ValueError (path traversal)."""
+        """A path clearly outside cwd raises WorkOrderProcessorError (path traversal)."""
         from processor.image_processor import process_image
-        with pytest.raises(ValueError, match="traversal"):
+        from processor.exceptions import WorkOrderProcessorError
+        with pytest.raises(WorkOrderProcessorError, match="traversal"):
             process_image("/etc/passwd", MagicMock(), "gemini-test")

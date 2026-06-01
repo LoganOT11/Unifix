@@ -29,8 +29,12 @@ from processor import (
     ResponseParseError,
     SchemaValidationError,
     CryptoError,
+    VideoExtractionError,
     WorkOrderProcessorError,
     validate_audio_file,
+    validate_video_file,
+    extract_audio_from_video,
+    is_video_extension,
     create_client,
     call_gemini_with_retry,
     parse_ai_json,
@@ -39,6 +43,8 @@ from processor import (
     write_encrypted_json,
     configure_logging,
 )
+
+_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif", ".pdf"}
 from processor.parser import extract_confidence_markers
 from processor.veracity import should_run_veracity, run_veracity_check, apply_veracity_corrections
 try:
@@ -192,6 +198,130 @@ def process_audio(file_path: str, output_dir: str | None = None) -> dict:
     return envelope
 
 
+def process_video(file_path: str, output_dir: str | None = None) -> dict:
+    """
+    Full pipeline for video work orders: validate video → extract audio →
+    run through the standard audio pipeline → clean up temp file.
+
+    Returns the full response envelope dict.
+    """
+    abs_path = str(Path(file_path).resolve())
+
+    # ── Phase 0: Validate video file ──────────────────────────────────────
+    safe_root = str(Path.cwd())
+    meta = validate_video_file(abs_path, safe_root=safe_root)
+    logger.info(
+        "Validated video file: %s  (%s, %s bytes)",
+        meta["path"], meta["detected_mime"], f"{meta['size_bytes']:,}",
+    )
+
+    # ── Phase 1: Extract audio ─────────────────────────────────────────────
+    audio_bytes, audio_mime, tmp_path = extract_audio_from_video(abs_path)
+    logger.info(
+        "Audio extracted: %s  (mime=%s, %s bytes)",
+        tmp_path, audio_mime, f"{len(audio_bytes):,}",
+    )
+
+    try:
+        # ── Phase 2: Send to Gemini ────────────────────────────────────────
+        logger.info("Sending to Gemini (model=%s, size=%d bytes)…", MODEL_ID, len(audio_bytes))
+        response = call_gemini_with_retry(
+            client=client,
+            model_id=MODEL_ID,
+            audio_bytes=audio_bytes,
+            mime_type=audio_mime,
+        )
+
+        usage_info = ""
+        if hasattr(response, "usage_metadata") and response.usage_metadata:
+            u = response.usage_metadata
+            usage_info = (
+                f"prompt_tokens={getattr(u, 'prompt_token_count', '?')}, "
+                f"response_tokens={getattr(u, 'candidates_token_count', '?')}"
+            )
+        logger.info("Gemini response received. %s", usage_info)
+
+        # ── Phase 3: Parse + validate ──────────────────────────────────────
+        extracted = parse_ai_json(response.text)
+        work_order, confidences = extract_confidence_markers(extracted)
+
+        validate_extracted_data(work_order)
+        logger.info("Extracted data passed schema validation.")
+
+        # ── Phase 3b: Post-extraction validation ───────────────────────────
+        validation_result = validate_work_order(work_order, confidences)
+        logger.info(
+            "Validation: %s  (unresolved=%s, review=%s)",
+            validation_result.overall_status.value,
+            validation_result.unresolved_fields,
+            validation_result.review_fields,
+        )
+
+        # ── Phase 3c: Veracity pass ────────────────────────────────────────
+        veracity_info: dict = {}
+        if should_run_veracity(validation_result, confidences):
+            logger.info("Running veracity pass (status=%s)…", validation_result.overall_status.value)
+            veracity_result = run_veracity_check(
+                client=client,
+                model_id=MODEL_ID,
+                audio_bytes=audio_bytes,
+                mime_type=audio_mime,
+                first_pass_json=work_order,
+            )
+            if veracity_result:
+                work_order, corrected_fields = apply_veracity_corrections(work_order, veracity_result)
+                veracity_info = {
+                    "ran": True,
+                    "overall_verdict": veracity_result.get("overall_verdict"),
+                    "corrections_count": veracity_result.get("corrections_count", 0),
+                    "corrected_fields": corrected_fields,
+                }
+                if corrected_fields:
+                    logger.info("Veracity corrections applied to: %s", corrected_fields)
+                    post_veracity_validation = validate_work_order(work_order, confidences)
+                    logger.info(
+                        "Post-veracity validation: %s  (unresolved=%s)",
+                        post_veracity_validation.overall_status.value,
+                        post_veracity_validation.unresolved_fields,
+                    )
+                    veracity_info["validation_post_veracity"] = {
+                        "overall_status": post_veracity_validation.overall_status.value,
+                        "unresolved_fields": post_veracity_validation.unresolved_fields,
+                        "review_fields": post_veracity_validation.review_fields,
+                    }
+            else:
+                veracity_info = {"ran": True, "overall_verdict": "ERROR", "corrections_count": 0}
+        else:
+            veracity_info = {"ran": False}
+
+        # ── Phase 4: Build envelope + write encrypted output ───────────────
+        envelope = build_response_envelope(abs_path, response, work_order, MODEL_ID)
+        envelope["source_type"] = "video"
+        envelope["extracted_audio_mime"] = audio_mime
+        envelope["validation"] = {
+            "overall_status": validation_result.overall_status.value,
+            "unresolved_fields": validation_result.unresolved_fields,
+            "review_fields": validation_result.review_fields,
+        }
+        envelope["veracity_pass"] = veracity_info
+
+        out_dir = Path(output_dir).resolve() if output_dir else Path(abs_path).parent
+        out_dir.mkdir(parents=True, exist_ok=True)
+        base = Path(abs_path).stem
+        out_path = str(out_dir / base)
+
+        enc_path = write_encrypted_json(envelope, out_path)
+        logger.info("✅  Output written: %s", enc_path)
+        return envelope
+
+    finally:
+        # Always clean up the temp WAV file
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+
 def process_image_file(file_path: str, output_dir: str | None = None) -> dict:
     """
     Full pipeline for image work orders: validate → preprocess → send to Gemini →
@@ -260,9 +390,10 @@ def main():
     )
     parser.add_argument(
         "--mode", "-m",
-        choices=["audio", "image"],
-        default="audio",
-        help="Processing mode: 'audio' (default) or 'image'.",
+        choices=["audio", "image", "video"],
+        default=None,
+        help="Processing mode: 'audio' (default), 'image', or 'video'. "
+             "Auto-detected from file extension when omitted.",
     )
     parser.add_argument(
         "--output-dir", "-o",
@@ -276,15 +407,30 @@ def main():
     )
     args = parser.parse_args()
 
+    # Auto-detect mode from extension when not explicitly set
+    mode = args.mode
+    if mode is None:
+        ext = Path(args.input_file).suffix.lower()
+        if is_video_extension(args.input_file):
+            mode = "video"
+            print(f"Auto-detected video file — using video mode.")
+        elif ext in _IMAGE_EXTENSIONS:
+            mode = "image"
+            print(f"Auto-detected image file — using image mode.")
+        else:
+            mode = "audio"
+
     try:
-        if args.mode == "image":
+        if mode == "image":
             envelope = process_image_file(args.input_file, output_dir=args.output_dir)
+        elif mode == "video":
+            envelope = process_video(args.input_file, output_dir=args.output_dir)
         else:
             envelope = process_audio(args.input_file, output_dir=args.output_dir)
 
         # Print a summary to stdout
         ed = envelope.get("extracted_data", {})
-        if args.mode == "image":
+        if mode == "image":
             ls = ed.get("labour_summary") or {}
             tasks = ed.get("tasks") or []
             print(f"\n📋  Summary  —  {ed.get('worker', 'N/A')} / {ed.get('client', 'N/A')}")
@@ -293,7 +439,8 @@ def main():
                   f"({ls.get('total_hours', '?')})")
             print(f"   Tasks     : {len(tasks)}")
         else:
-            print(f"\n📋  Summary  —  {ed.get('vehicle_equipment', 'N/A')}")
+            label = "Video" if mode == "video" else "Audio"
+            print(f"\n📋  Summary ({label})  —  {ed.get('vehicle_equipment', 'N/A')}")
             print(f"   Problem   : {ed.get('reported_problem', 'N/A')[:80]}")
             print(f"   Time      : {ed.get('start_time', '?')} → {ed.get('end_time', '?')} "
                   f"({ed.get('total_time_spent', '?')})")
@@ -308,7 +455,7 @@ def main():
             plain_path.write_text(json.dumps(envelope, indent=2, ensure_ascii=False), encoding="utf-8")
             print(f"📄  Plaintext sidecar: {plain_path}")
 
-    except AudioValidationError as exc:
+    except (AudioValidationError, VideoExtractionError) as exc:
         logger.error("Validation failed: %s", exc)
         print(f"❌  Validation error: {exc}", file=sys.stderr)
         sys.exit(2)
@@ -322,8 +469,8 @@ def main():
         sys.exit(4)
     except SchemaValidationError as exc:
         logger.warning("Schema validation failed: %s", exc)
-        print(f"⚠️  Schema validation warning (output still saved): {exc}", file=sys.stderr)
-        # Continue — the output was already written before the exit
+        print(f"⚠️  Schema validation failed (output was NOT saved): {exc}", file=sys.stderr)
+        sys.exit(6)
     except (CryptoError, WorkOrderProcessorError) as exc:
         logger.error("Processing failed: %s", exc)
         print(f"❌  Error: {exc}", file=sys.stderr)

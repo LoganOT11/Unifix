@@ -1,10 +1,10 @@
-"""Pre-flight audio file validation."""
+"""Pre-flight audio and video file validation."""
 
 import os
 import magic
 from pathlib import Path
 
-from .exceptions import AudioValidationError
+from .exceptions import AudioValidationError, VideoExtractionError
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -48,7 +48,7 @@ def validate_audio_file(file_path: str, safe_root: str | None = None) -> dict:
 
     # 1. Path traversal guard
     root = Path(safe_root).resolve() if safe_root else Path.cwd()
-    if not str(path).startswith(str(root)):
+    if not path.is_relative_to(root):
         raise AudioValidationError(
             f"Path traversal detected: {file_path} resolves outside {root}"
         )
@@ -94,6 +94,92 @@ def validate_audio_file(file_path: str, safe_root: str | None = None) -> dict:
             f"File content identified as '{detected_mime}' — not a supported "
             f"audio type. The file extension may have been spoofed. "
             f"Allowed types: {sorted(ALLOWED_AUDIO_MIMES)}"
+        )
+
+    return {
+        "path": str(path),
+        "size_bytes": size,
+        "extension": ext,
+        "detected_mime": detected_mime,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Video pre-flight validation
+# ---------------------------------------------------------------------------
+_MAX_VIDEO_SIZE_BYTES = 2 * 1024 * 1024 * 1024   # 2 GB
+_MIN_VIDEO_SIZE_BYTES = 10 * 1024                 # 10 KB
+
+_ALLOWED_VIDEO_EXTENSIONS = {
+    ".mp4", ".mkv", ".mov", ".avi", ".webm",
+    ".m4v", ".3gp", ".wmv", ".flv",
+}
+
+_ALLOWED_VIDEO_MIMES = {
+    "video/mp4",
+    "video/x-matroska",
+    "video/quicktime",
+    "video/x-msvideo",
+    "video/webm",
+    "video/x-m4v",
+    "video/3gpp",
+    "video/x-ms-wmv",
+    "video/x-flv",
+    # Some encoders produce these for valid video files
+    "application/octet-stream",
+}
+
+
+def validate_video_file(file_path: str, safe_root: str | None = None) -> dict:
+    """
+    Run pre-flight checks on a video file.
+
+    Returns a dict with: {path, size_bytes, extension, detected_mime}
+    Raises VideoExtractionError on any failure.
+    """
+    path = Path(file_path).resolve()
+
+    root = Path(safe_root).resolve() if safe_root else Path.cwd()
+    if not path.is_relative_to(root):
+        raise VideoExtractionError(
+            f"Path traversal detected: {file_path} resolves outside {root}"
+        )
+
+    if not path.is_file():
+        raise VideoExtractionError(f"File not found: {file_path}")
+
+    if len(path.name) > MAX_FILENAME_LENGTH:
+        raise VideoExtractionError(
+            f"Filename exceeds maximum length ({MAX_FILENAME_LENGTH} chars)."
+        )
+    dangerous = {"..", "\x00", "/", "\\"}
+    if any(c in path.name for c in dangerous):
+        raise VideoExtractionError("Filename contains unsafe characters.")
+
+    ext = path.suffix.lower()
+    if ext not in _ALLOWED_VIDEO_EXTENSIONS:
+        raise VideoExtractionError(
+            f"Extension '{ext}' is not allowed. "
+            f"Allowed: {sorted(_ALLOWED_VIDEO_EXTENSIONS)}"
+        )
+
+    size = path.stat().st_size
+    if size < _MIN_VIDEO_SIZE_BYTES:
+        raise VideoExtractionError(
+            f"File too small ({size} bytes). Possibly corrupt or empty."
+        )
+    if size > _MAX_VIDEO_SIZE_BYTES:
+        raise VideoExtractionError(
+            f"File too large ({size / 1e9:.2f} GB). "
+            f"Maximum is {_MAX_VIDEO_SIZE_BYTES / 1e9:.0f} GB."
+        )
+
+    mime_detector = magic.Magic(mime=True)
+    detected_mime = mime_detector.from_file(str(path))
+    if detected_mime not in _ALLOWED_VIDEO_MIMES:
+        raise VideoExtractionError(
+            f"File content identified as '{detected_mime}' — not a supported "
+            f"video type. The file extension may have been spoofed."
         )
 
     return {
