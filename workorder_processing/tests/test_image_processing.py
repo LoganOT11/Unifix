@@ -351,7 +351,7 @@ class TestProcessImage:
         jpeg = self._make_jpeg_bytes()
         from processor.image_processor import process_image
         with self._mock_validate(), self._mock_read_bytes(jpeg):
-            result = process_image("/fake/workorder.jpg", MagicMock(), "gemini-test", preprocess=False)
+            result = process_image("/fake/workorder.jpg", MagicMock(), "gemini-test", prompt="test-prompt", preprocess=False)
 
         assert isinstance(result, tuple)
         assert len(result) == 4
@@ -366,7 +366,7 @@ class TestProcessImage:
         from processor.image_processor import process_image
         with self._mock_validate(), self._mock_read_bytes(jpeg):
             work_order, confidences, response, preprocess_result = process_image(
-                "/fake/workorder.jpg", MagicMock(), "gemini-test", preprocess=False
+                "/fake/workorder.jpg", MagicMock(), "gemini-test", prompt="test-prompt", preprocess=False
             )
         assert isinstance(work_order, dict)
 
@@ -380,7 +380,7 @@ class TestProcessImage:
         from processor.image_processor import process_image
         with self._mock_validate(), self._mock_read_bytes(jpeg):
             work_order, confidences, response, preprocess_result = process_image(
-                "/fake/workorder.jpg", MagicMock(), "gemini-test", preprocess=False
+                "/fake/workorder.jpg", MagicMock(), "gemini-test", prompt="test-prompt", preprocess=False
             )
         assert work_order.get("worker") == "James Hartwell"
         assert work_order.get("vehicle_equipment") == "TRK-001"
@@ -395,7 +395,7 @@ class TestProcessImage:
         from processor.image_processor import process_image
         with self._mock_validate(), self._mock_read_bytes(jpeg):
             work_order, confidences, response, preprocess_result = process_image(
-                "/fake/workorder.jpg", MagicMock(), "gemini-test", preprocess=False
+                "/fake/workorder.jpg", MagicMock(), "gemini-test", prompt="test-prompt", preprocess=False
             )
         assert isinstance(confidences, dict)
         assert confidences.get("worker") == "HIGH"
@@ -412,7 +412,7 @@ class TestProcessImage:
         from processor.image_processor import process_image
         with self._mock_validate(), self._mock_read_bytes(jpeg):
             work_order, confidences, response, preprocess_result = process_image(
-                "/fake/workorder.jpg", MagicMock(), "gemini-test", preprocess=False
+                "/fake/workorder.jpg", MagicMock(), "gemini-test", prompt="test-prompt", preprocess=False
             )
         assert not any("__confidence" in k for k in work_order)
 
@@ -426,7 +426,7 @@ class TestProcessImage:
         from processor.image_processor import process_image
         with self._mock_validate(), self._mock_read_bytes(jpeg):
             _, _, _, preprocess_result = process_image(
-                "/fake/workorder.jpg", MagicMock(), "gemini-test", preprocess=False
+                "/fake/workorder.jpg", MagicMock(), "gemini-test", prompt="test-prompt", preprocess=False
             )
         assert preprocess_result is None
 
@@ -443,7 +443,7 @@ class TestProcessImage:
         from processor.image_processor import process_image
         with self._mock_validate(), self._mock_read_bytes(jpeg):
             _, _, _, preprocess_result = process_image(
-                "/fake/workorder.jpg", MagicMock(), "gemini-test", preprocess=True
+                "/fake/workorder.jpg", MagicMock(), "gemini-test", prompt="test-prompt", preprocess=True
             )
         assert preprocess_result is not None
         assert isinstance(preprocess_result, PreprocessResult)
@@ -456,11 +456,11 @@ class TestProcessImage:
         cwd = os.getcwd()
         missing = os.path.join(cwd, "definitely_does_not_exist_ghost_12345.jpg")
         with pytest.raises(WorkOrderProcessorError, match="not found"):
-            process_image(missing, MagicMock(), "gemini-test")
+            process_image(missing, MagicMock(), "gemini-test", prompt="test-prompt")
 
     def test_process_image_traversal_raises(self):
         """A path clearly outside cwd raises WorkOrderProcessorError (path traversal)."""
         from processor.image_processor import process_image
         from processor.exceptions import WorkOrderProcessorError
         with pytest.raises(WorkOrderProcessorError, match="traversal"):
-            process_image("/etc/passwd", MagicMock(), "gemini-test")
+            process_image("/etc/passwd", MagicMock(), "gemini-test", prompt="test-prompt")

@@ -1,0 +1,13 @@
+document_type: image
+schema_version: v3
+envelope_version: "3.0"
+prompt: image_extraction_v3
+schema_format: full
+preprocessing_enabled: true
+
+validation: null
+
+veracity:
+  enabled: false
+  trigger_statuses: []
+  trigger_confidences: []

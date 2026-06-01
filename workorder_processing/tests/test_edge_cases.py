@@ -19,12 +19,38 @@ import pytest
 from pathlib import Path
 
 from validator.fuzzy_resolver import (
-    resolve_field, resolve_parts_used, _score_algorithms,
-    FIELD_WEIGHTS, THRESHOLD_HIGH, THRESHOLD_LOW,
+    _score_algorithms,
+    THRESHOLD_HIGH, THRESHOLD_LOW,
+    FuzzyResolver,
 )
 from validator.time_validator import validate_time_field
-from validator.work_order_validator import validate_work_order
+from validator.work_order_validator import validate_work_order as _vow_validate
 from validator.models import MatchStatus, OverallStatus
+from config import load_document_config
+from db.memory import InMemoryProvider
+
+# ---------------------------------------------------------------------------
+# Module-level defaults — shims so test bodies need no changes
+# ---------------------------------------------------------------------------
+_cfg = load_document_config("audio_v1")
+_provider = InMemoryProvider()
+_resolver = FuzzyResolver(
+    _cfg.validation.fuzzy_fields,
+    _provider,
+    thresholds=_cfg.validation.thresholds,
+)
+
+
+def resolve_field(field_name, raw_value):
+    return _resolver.resolve_field(field_name, raw_value)
+
+
+def resolve_parts_used(raw_value):
+    return _resolver.resolve_parts_used(raw_value)
+
+
+def validate_work_order(extracted, confidences=None):
+    return _vow_validate(extracted, _cfg.validation, _provider, confidences)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

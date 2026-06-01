@@ -1,21 +1,8 @@
 #!/usr/bin/env python3
-"""
-Work Order Audio Processor
-
-Processes audio recordings of mechanical/maintenance work and extracts
-structured JSON data using Gemini.
-
-Sends a local audio file to Gemini for transcription and schema extraction,
-validates the result against a JSON schema, wraps it in an audit envelope,
-and writes an encrypted .json.enc output file.
-
-Usage:
-    python main.py <audio_file_path>
-    python main.py examples/recording.mp3
-    python main.py examples/recording.mp3 --output-dir outputs/
-"""
+"""Work Order Processor — CLI entry point."""
 
 import argparse
+import json
 import logging
 import os
 import sys
@@ -23,461 +10,144 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from config import load_document_config
+from config.settings import DEFAULT_MODEL, DEFAULT_LOG_PATH, IMAGE_EXTENSIONS, MAX_ENV_WALK_DEPTH
+from db.memory import InMemoryProvider
+from pipeline import get_pipeline
+from pipeline.base import PipelineContext
 from processor import (
-    AudioValidationError,
+    InputValidationError,
     APICallError,
     ResponseParseError,
     SchemaValidationError,
     CryptoError,
     VideoExtractionError,
     WorkOrderProcessorError,
-    validate_audio_file,
-    validate_video_file,
-    extract_audio_from_video,
-    is_video_extension,
     create_client,
-    call_gemini_with_retry,
-    parse_ai_json,
-    validate_extracted_data,
-    build_response_envelope,
-    write_encrypted_json,
     configure_logging,
 )
-
-_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif", ".pdf"}
-from processor.parser import extract_confidence_markers
-from processor.veracity import should_run_veracity, run_veracity_check, apply_veracity_corrections
-try:
-    from processor.image_processor import process_image as _process_image_gemini, validate_image_file as _validate_image_file
-    from processor.image_preprocessor import PreprocessResult
-    _IMAGE_PROCESSING_AVAILABLE = True
-except ImportError:
-    _IMAGE_PROCESSING_AVAILABLE = False
-from validator.work_order_validator import validate_work_order
+from processor.video_extractor import is_video_extension
 
 # ---------------------------------------------------------------------------
-# Bootstrap — env, logging, client
+# Bootstrap: load .env by walking up from this file's directory
 # ---------------------------------------------------------------------------
-# Walk up from this file's directory to find the project-root .env
 _script_dir = Path(__file__).resolve().parent
-for _ in range(3):
+for _ in range(MAX_ENV_WALK_DEPTH):
     _candidate = _script_dir / ".env"
     if _candidate.is_file():
         load_dotenv(_candidate)
         break
     _script_dir = _script_dir.parent
 
-API_KEY = os.environ.get("GOOGLE_API_KEY")
-if not API_KEY:
-    raise RuntimeError(
-        "GOOGLE_API_KEY is not set. Either:\n"
-        "  - Place a .env file in the project root, or\n"
-        "  - Export it:  export GOOGLE_API_KEY=your-key"
-    )
 
-log_file = os.environ.get("PROCESSOR_LOG", str(Path(__file__).resolve().parent / "processor.log"))
-logger = configure_logging(log_file=log_file)
-
-MODEL_ID = os.environ.get("GEMINI_MODEL", "gemini-3.1-flash-lite")
-client = create_client(API_KEY)
-
-# ---------------------------------------------------------------------------
-# Core pipeline
-# ---------------------------------------------------------------------------
-def process_audio(file_path: str, output_dir: str | None = None) -> dict:
-    """
-    Full pipeline: validate → send to Gemini → parse → validate schema →
-    build envelope → encrypt and write.
-
-    Returns the full response envelope dict.
-    Raises WorkOrderProcessorError subclasses on failure.
-    """
-    abs_path = str(Path(file_path).resolve())
-
-    # ── Phase 1: Input validation ──────────────────────────────────────
-    safe_root = str(Path.cwd())
-    meta = validate_audio_file(abs_path, safe_root=safe_root)
-    logger.info(
-        "Validated audio file: %s  (%s, %s, %s)",
-        meta["path"], meta["detected_mime"], meta["extension"],
-        f"{meta['size_bytes']:,} bytes",
-    )
-
-    # ── Phase 2: Read + send to Gemini ─────────────────────────────────
-    audio_bytes = Path(abs_path).read_bytes()
-    logger.info("Sending to Gemini (model=%s, size=%d bytes)…", MODEL_ID, len(audio_bytes))
-
-    response = call_gemini_with_retry(
-        client=client,
-        model_id=MODEL_ID,
-        audio_bytes=audio_bytes,
-        mime_type=meta["detected_mime"],
-    )
-
-    usage_info = ""
-    if hasattr(response, "usage_metadata") and response.usage_metadata:
-        u = response.usage_metadata
-        usage_info = (
-            f"prompt_tokens={getattr(u, 'prompt_token_count', '?')}, "
-            f"response_tokens={getattr(u, 'candidates_token_count', '?')}"
+def _require_env(name: str) -> str:
+    value = os.environ.get(name)
+    if not value:
+        raise RuntimeError(
+            f"{name} is not set. Either:\n"
+            "  - Place a .env file in the project root, or\n"
+            f"  - Export it:  export {name}=your-value"
         )
-    logger.info("Gemini response received. %s", usage_info)
+    return value
 
-    # ── Phase 3: Parse + validate ──────────────────────────────────────
-    extracted = parse_ai_json(response.text)
-    logger.debug("Parsed extracted data: %s", extracted)
 
-    work_order, confidences = extract_confidence_markers(extracted)
+def _auto_detect_mode(file_path: str) -> str:
+    ext = Path(file_path).suffix.lower()
+    if is_video_extension(file_path):
+        print("Auto-detected video file — using video mode.")
+        return "video"
+    if ext in IMAGE_EXTENSIONS:
+        print("Auto-detected image file — using image mode.")
+        return "image"
+    return "audio"
 
-    validate_extracted_data(work_order)
-    logger.info("Extracted data passed schema validation.")
 
-    # ── Phase 3b: Post-extraction validation ───────────────────────────
-    validation_result = validate_work_order(work_order, confidences)
-    logger.info(
-        "Validation: %s  (unresolved=%s, review=%s)",
-        validation_result.overall_status.value,
-        validation_result.unresolved_fields,
-        validation_result.review_fields,
-    )
+def _config_name(mode: str) -> str:
+    return "image_v3" if mode == "image" else "audio_v1"
 
-    # ── Phase 3c: Veracity pass ────────────────────────────────────────
-    veracity_info: dict = {}
-    if should_run_veracity(validation_result, confidences):
-        logger.info("Running veracity pass (status=%s)…", validation_result.overall_status.value)
-        veracity_result = run_veracity_check(
-            client=client,
-            model_id=MODEL_ID,
-            audio_bytes=audio_bytes,
-            mime_type=meta["detected_mime"],
-            first_pass_json=work_order,
-        )
-        if veracity_result:
-            work_order, corrected_fields = apply_veracity_corrections(work_order, veracity_result)
-            veracity_info = {
-                "ran": True,
-                "overall_verdict": veracity_result.get("overall_verdict"),
-                "corrections_count": veracity_result.get("corrections_count", 0),
-                "corrected_fields": corrected_fields,
-            }
-            if corrected_fields:
-                logger.info("Veracity corrections applied to: %s", corrected_fields)
-                post_veracity_validation = validate_work_order(work_order, confidences)
-                logger.info(
-                    "Post-veracity validation: %s  (unresolved=%s)",
-                    post_veracity_validation.overall_status.value,
-                    post_veracity_validation.unresolved_fields,
-                )
-                veracity_info["validation_post_veracity"] = {
-                    "overall_status": post_veracity_validation.overall_status.value,
-                    "unresolved_fields": post_veracity_validation.unresolved_fields,
-                    "review_fields": post_veracity_validation.review_fields,
-                }
-        else:
-            veracity_info = {"ran": True, "overall_verdict": "ERROR", "corrections_count": 0}
+
+def _print_summary(envelope: dict, mode: str) -> None:
+    ed = envelope.get("extracted_data", {})
+    if mode == "image":
+        ls = ed.get("labour_summary") or {}
+        tasks = ed.get("tasks") or []
+        print(f"\nSummary  —  {ed.get('worker', 'N/A')} / {ed.get('client', 'N/A')}")
+        print(f"  Location : {ed.get('location', 'N/A')}  |  Date: {ed.get('date', 'N/A')}")
+        print(f"  Time     : {ls.get('start', '?')} -> {ls.get('end', '?')} ({ls.get('total_hours', '?')})")
+        print(f"  Tasks    : {len(tasks)}")
     else:
-        veracity_info = {"ran": False}
-
-    # ── Phase 4: Build envelope + write encrypted output ────────────────
-    envelope = build_response_envelope(abs_path, response, work_order, MODEL_ID)
-    envelope["validation"] = {
-        "overall_status": validation_result.overall_status.value,
-        "unresolved_fields": validation_result.unresolved_fields,
-        "review_fields": validation_result.review_fields,
-    }
-    envelope["veracity_pass"] = veracity_info
-
-    out_dir = Path(output_dir).resolve() if output_dir else Path(abs_path).parent
-    out_dir.mkdir(parents=True, exist_ok=True)
-    base = Path(abs_path).stem
-    out_path = str(out_dir / base)
-
-    enc_path = write_encrypted_json(envelope, out_path)
-    logger.info("✅  Output written: %s", enc_path)
-
-    return envelope
+        label = "Video" if mode == "video" else "Audio"
+        print(f"\nSummary ({label})  —  {ed.get('vehicle_equipment', 'N/A')}")
+        print(f"  Problem  : {ed.get('reported_problem', 'N/A')[:80]}")
+        print(f"  Time     : {ed.get('start_time', '?')} -> {ed.get('end_time', '?')} "
+              f"({ed.get('total_time_spent', '?')})")
+    print(f"  Finish   : {envelope.get('finish_reason', 'UNKNOWN')}")
 
 
-def process_video(file_path: str, output_dir: str | None = None) -> dict:
-    """
-    Full pipeline for video work orders: validate video → extract audio →
-    run through the standard audio pipeline → clean up temp file.
-
-    Returns the full response envelope dict.
-    """
-    abs_path = str(Path(file_path).resolve())
-
-    # ── Phase 0: Validate video file ──────────────────────────────────────
-    safe_root = str(Path.cwd())
-    meta = validate_video_file(abs_path, safe_root=safe_root)
-    logger.info(
-        "Validated video file: %s  (%s, %s bytes)",
-        meta["path"], meta["detected_mime"], f"{meta['size_bytes']:,}",
-    )
-
-    # ── Phase 1: Extract audio ─────────────────────────────────────────────
-    audio_bytes, audio_mime, tmp_path = extract_audio_from_video(abs_path)
-    logger.info(
-        "Audio extracted: %s  (mime=%s, %s bytes)",
-        tmp_path, audio_mime, f"{len(audio_bytes):,}",
-    )
-
-    try:
-        # ── Phase 2: Send to Gemini ────────────────────────────────────────
-        logger.info("Sending to Gemini (model=%s, size=%d bytes)…", MODEL_ID, len(audio_bytes))
-        response = call_gemini_with_retry(
-            client=client,
-            model_id=MODEL_ID,
-            audio_bytes=audio_bytes,
-            mime_type=audio_mime,
-        )
-
-        usage_info = ""
-        if hasattr(response, "usage_metadata") and response.usage_metadata:
-            u = response.usage_metadata
-            usage_info = (
-                f"prompt_tokens={getattr(u, 'prompt_token_count', '?')}, "
-                f"response_tokens={getattr(u, 'candidates_token_count', '?')}"
-            )
-        logger.info("Gemini response received. %s", usage_info)
-
-        # ── Phase 3: Parse + validate ──────────────────────────────────────
-        extracted = parse_ai_json(response.text)
-        work_order, confidences = extract_confidence_markers(extracted)
-
-        validate_extracted_data(work_order)
-        logger.info("Extracted data passed schema validation.")
-
-        # ── Phase 3b: Post-extraction validation ───────────────────────────
-        validation_result = validate_work_order(work_order, confidences)
-        logger.info(
-            "Validation: %s  (unresolved=%s, review=%s)",
-            validation_result.overall_status.value,
-            validation_result.unresolved_fields,
-            validation_result.review_fields,
-        )
-
-        # ── Phase 3c: Veracity pass ────────────────────────────────────────
-        veracity_info: dict = {}
-        if should_run_veracity(validation_result, confidences):
-            logger.info("Running veracity pass (status=%s)…", validation_result.overall_status.value)
-            veracity_result = run_veracity_check(
-                client=client,
-                model_id=MODEL_ID,
-                audio_bytes=audio_bytes,
-                mime_type=audio_mime,
-                first_pass_json=work_order,
-            )
-            if veracity_result:
-                work_order, corrected_fields = apply_veracity_corrections(work_order, veracity_result)
-                veracity_info = {
-                    "ran": True,
-                    "overall_verdict": veracity_result.get("overall_verdict"),
-                    "corrections_count": veracity_result.get("corrections_count", 0),
-                    "corrected_fields": corrected_fields,
-                }
-                if corrected_fields:
-                    logger.info("Veracity corrections applied to: %s", corrected_fields)
-                    post_veracity_validation = validate_work_order(work_order, confidences)
-                    logger.info(
-                        "Post-veracity validation: %s  (unresolved=%s)",
-                        post_veracity_validation.overall_status.value,
-                        post_veracity_validation.unresolved_fields,
-                    )
-                    veracity_info["validation_post_veracity"] = {
-                        "overall_status": post_veracity_validation.overall_status.value,
-                        "unresolved_fields": post_veracity_validation.unresolved_fields,
-                        "review_fields": post_veracity_validation.review_fields,
-                    }
-            else:
-                veracity_info = {"ran": True, "overall_verdict": "ERROR", "corrections_count": 0}
-        else:
-            veracity_info = {"ran": False}
-
-        # ── Phase 4: Build envelope + write encrypted output ───────────────
-        envelope = build_response_envelope(abs_path, response, work_order, MODEL_ID)
-        envelope["source_type"] = "video"
-        envelope["extracted_audio_mime"] = audio_mime
-        envelope["validation"] = {
-            "overall_status": validation_result.overall_status.value,
-            "unresolved_fields": validation_result.unresolved_fields,
-            "review_fields": validation_result.review_fields,
-        }
-        envelope["veracity_pass"] = veracity_info
-
-        out_dir = Path(output_dir).resolve() if output_dir else Path(abs_path).parent
-        out_dir.mkdir(parents=True, exist_ok=True)
-        base = Path(abs_path).stem
-        out_path = str(out_dir / base)
-
-        enc_path = write_encrypted_json(envelope, out_path)
-        logger.info("✅  Output written: %s", enc_path)
-        return envelope
-
-    finally:
-        # Always clean up the temp WAV file
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-
-
-def process_image_file(file_path: str, output_dir: str | None = None) -> dict:
-    """
-    Full pipeline for image work orders: validate → preprocess → send to Gemini →
-    parse → post-extraction validate → optional veracity pass → encrypt and write.
-    """
-    if not _IMAGE_PROCESSING_AVAILABLE:
-        raise WorkOrderProcessorError(
-            "Image processing dependencies are not installed. "
-            "Run: pip install opencv-python-headless Pillow numpy"
-        )
-    abs_path = str(Path(file_path).resolve())
-    safe_root = str(Path.cwd())
-    meta = _validate_image_file(abs_path, safe_root=safe_root)
-    logger.info(
-        "Validated image file: %s  (%s, %s bytes)",
-        meta["path"], meta["mime_type"], f"{meta['size_bytes']:,}",
-    )
-
-    work_order, confidences, response, preprocess_result = _process_image_gemini(
-        abs_path, client, MODEL_ID, preprocess=True, prompt_version="v3",
-    )
-    if preprocess_result:
-        logger.info(
-            "Image preprocessed: quality=%s, ops=%s",
-            preprocess_result.quality_before.value,
-            preprocess_result.operations_applied,
-        )
-
-    validate_extracted_data(work_order, schema_version="v3")
-    logger.info("Extracted data passed schema validation.")
-
-    veracity_info: dict = {"ran": False}
-
-    envelope = build_response_envelope(
-        abs_path, response, work_order, MODEL_ID,
-        veracity_info=veracity_info,
-        schema_version="3.0",
-    )
-    if preprocess_result:
-        envelope["preprocessing"] = {
-            "quality_before": preprocess_result.quality_before.value,
-            "operations_applied": preprocess_result.operations_applied,
-            "estimated_improvement": preprocess_result.estimated_improvement,
-        }
-
-    out_dir = Path(output_dir).resolve() if output_dir else Path(abs_path).parent
-    out_dir.mkdir(parents=True, exist_ok=True)
-    base = Path(abs_path).stem
-    out_path = str(out_dir / base)
-
-    enc_path = write_encrypted_json(envelope, out_path)
-    logger.info("✅  Output written: %s", enc_path)
-    return envelope
-
-
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Extract structured work-order JSON from audio using Gemini.",
+        description="Extract structured work-order JSON from audio/video/image using Gemini.",
     )
-    parser.add_argument(
-        "input_file",
-        help="Path to the audio or image file to process.",
-    )
+    parser.add_argument("input_file", help="Path to the file to process.")
     parser.add_argument(
         "--mode", "-m",
         choices=["audio", "image", "video"],
         default=None,
-        help="Processing mode: 'audio' (default), 'image', or 'video'. "
-             "Auto-detected from file extension when omitted.",
+        help="Processing mode. Auto-detected from file extension when omitted.",
     )
-    parser.add_argument(
-        "--output-dir", "-o",
-        default=None,
-        help="Directory for output files (default: same directory as audio file).",
-    )
-    parser.add_argument(
-        "--plaintext", "-p",
-        action="store_true",
-        help="Also write a plaintext .json file alongside the encrypted one.",
-    )
+    parser.add_argument("--output-dir", "-o", default=None,
+                        help="Directory for output files (default: input file directory).")
+    parser.add_argument("--plaintext", "-p", action="store_true",
+                        help="Also write a plaintext .json sidecar alongside the encrypted output.")
     args = parser.parse_args()
 
-    # Auto-detect mode from extension when not explicitly set
-    mode = args.mode
-    if mode is None:
-        ext = Path(args.input_file).suffix.lower()
-        if is_video_extension(args.input_file):
-            mode = "video"
-            print(f"Auto-detected video file — using video mode.")
-        elif ext in _IMAGE_EXTENSIONS:
-            mode = "image"
-            print(f"Auto-detected image file — using image mode.")
-        else:
-            mode = "audio"
+    log_file = os.environ.get("PROCESSOR_LOG", str(Path(__file__).resolve().parent / DEFAULT_LOG_PATH))
+    logger = configure_logging(log_file=log_file)
+
+    mode = args.mode or _auto_detect_mode(args.input_file)
+    config = load_document_config(_config_name(mode))
+    provider = InMemoryProvider()
+    pipeline = get_pipeline(mode, config, provider)
+
+    api_key = _require_env("GOOGLE_API_KEY")
+    client = create_client(api_key)
+    model_id = os.environ.get("GEMINI_MODEL", DEFAULT_MODEL)
+
+    ctx = PipelineContext(
+        source_path=Path(args.input_file).resolve(),
+        output_dir=Path(args.output_dir).resolve() if args.output_dir else None,
+        client=client,
+        model_id=model_id,
+        config=config,
+        plaintext=args.plaintext,
+    )
 
     try:
-        if mode == "image":
-            envelope = process_image_file(args.input_file, output_dir=args.output_dir)
-        elif mode == "video":
-            envelope = process_video(args.input_file, output_dir=args.output_dir)
-        else:
-            envelope = process_audio(args.input_file, output_dir=args.output_dir)
-
-        # Print a summary to stdout
-        ed = envelope.get("extracted_data", {})
-        if mode == "image":
-            ls = ed.get("labour_summary") or {}
-            tasks = ed.get("tasks") or []
-            print(f"\n📋  Summary  —  {ed.get('worker', 'N/A')} / {ed.get('client', 'N/A')}")
-            print(f"   Location  : {ed.get('location', 'N/A')}  |  Date: {ed.get('date', 'N/A')}")
-            print(f"   Time      : {ls.get('start', '?')} → {ls.get('end', '?')} "
-                  f"({ls.get('total_hours', '?')})")
-            print(f"   Tasks     : {len(tasks)}")
-        else:
-            label = "Video" if mode == "video" else "Audio"
-            print(f"\n📋  Summary ({label})  —  {ed.get('vehicle_equipment', 'N/A')}")
-            print(f"   Problem   : {ed.get('reported_problem', 'N/A')[:80]}")
-            print(f"   Time      : {ed.get('start_time', '?')} → {ed.get('end_time', '?')} "
-                  f"({ed.get('total_time_spent', '?')})")
-        print(f"   Finish    : {envelope.get('finish_reason', 'UNKNOWN')}")
-
-        # Optional plaintext sidecar
-        if args.plaintext:
-            import json
-            out_dir = Path(args.output_dir).resolve() if args.output_dir else Path(args.input_file).resolve().parent
-            out_dir.mkdir(parents=True, exist_ok=True)
-            plain_path = out_dir / (Path(args.input_file).stem + ".json")
-            plain_path.write_text(json.dumps(envelope, indent=2, ensure_ascii=False), encoding="utf-8")
-            print(f"📄  Plaintext sidecar: {plain_path}")
-
-    except (AudioValidationError, VideoExtractionError) as exc:
+        envelope = pipeline.run(ctx)
+        _print_summary(envelope, mode)
+    except (InputValidationError, VideoExtractionError) as exc:
         logger.error("Validation failed: %s", exc)
-        print(f"❌  Validation error: {exc}", file=sys.stderr)
+        print(f"Validation error: {exc}", file=sys.stderr)
         sys.exit(2)
     except APICallError as exc:
         logger.error("API call failed: %s", exc)
-        print(f"❌  API error: {exc}", file=sys.stderr)
+        print(f"API error: {exc}", file=sys.stderr)
         sys.exit(3)
     except ResponseParseError as exc:
         logger.error("Response parsing failed: %s", exc)
-        print(f"❌  Parse error: {exc}", file=sys.stderr)
+        print(f"Parse error: {exc}", file=sys.stderr)
         sys.exit(4)
     except SchemaValidationError as exc:
         logger.warning("Schema validation failed: %s", exc)
-        print(f"⚠️  Schema validation failed (output was NOT saved): {exc}", file=sys.stderr)
+        print(f"Schema validation failed (output was NOT saved): {exc}", file=sys.stderr)
         sys.exit(6)
     except (CryptoError, WorkOrderProcessorError) as exc:
         logger.error("Processing failed: %s", exc)
-        print(f"❌  Error: {exc}", file=sys.stderr)
+        print(f"Error: {exc}", file=sys.stderr)
         sys.exit(5)
     except Exception as exc:
         logger.exception("Unexpected error: %s", exc)
-        print(f"❌  Unexpected error: {exc}", file=sys.stderr)
+        print(f"Unexpected error: {exc}", file=sys.stderr)
         sys.exit(1)
 
 

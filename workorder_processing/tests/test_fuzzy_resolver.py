@@ -1,6 +1,32 @@
 import pytest
-from validator.fuzzy_resolver import resolve_field, resolve_parts_used
+from validator.fuzzy_resolver import FuzzyResolver
 from validator.models import MatchStatus
+from validator.work_order_validator import validate_work_order as _vow_validate
+from config import load_document_config
+from db.memory import InMemoryProvider
+
+# ---------------------------------------------------------------------------
+# Module-level defaults (shared across all test classes)
+# ---------------------------------------------------------------------------
+_cfg = load_document_config("audio_v1")
+_provider = InMemoryProvider()
+_resolver = FuzzyResolver(
+    _cfg.validation.fuzzy_fields,
+    _provider,
+    thresholds=_cfg.validation.thresholds,
+)
+
+
+def resolve_field(field_name, raw_value):
+    return _resolver.resolve_field(field_name, raw_value)
+
+
+def resolve_parts_used(raw_value):
+    return _resolver.resolve_parts_used(raw_value)
+
+
+def validate_work_order(extracted, confidences=None):
+    return _vow_validate(extracted, _cfg.validation, _provider, confidences)
 
 
 class TestWorkerResolution:
@@ -272,41 +298,34 @@ class TestFullWorkOrderValidation:
         return base
 
     def test_clean_input_passes(self):
-        from validator.work_order_validator import validate_work_order
         result = validate_work_order(self._make_order())
         assert result.overall_status.value == "PASS"
         assert result.unresolved_fields == []
 
     def test_typo_in_worker_still_passes(self):
-        from validator.work_order_validator import validate_work_order
         result = validate_work_order(self._make_order({"worker": "James Hartwal"}))
         assert result.overall_status.value in ("PASS", "REVIEW")
         assert result.field_results["worker"].resolved_value == "James Hartwell"
 
     def test_unknown_worker_causes_fail(self):
-        from validator.work_order_validator import validate_work_order
         result = validate_work_order(self._make_order({"worker": "Nobody Known XYZ"}))
         assert result.overall_status.value == "FAIL"
         assert "worker" in result.unresolved_fields
 
     def test_invalid_time_causes_fail(self):
-        from validator.work_order_validator import validate_work_order
         result = validate_work_order(self._make_order({"start_time": "not a time"}))
         assert result.overall_status.value == "FAIL"
         assert "start_time" in result.unresolved_fields
 
     def test_low_confidence_parts_triggers_review(self):
-        from validator.work_order_validator import validate_work_order
         result = validate_work_order(self._make_order({"parts_used": "some vague part"}))
         assert result.overall_status.value in ("REVIEW", "FAIL")
 
     def test_resolved_json_contains_all_fields(self):
-        from validator.work_order_validator import validate_work_order
         result = validate_work_order(self._make_order())
         assert len(result.resolved_json) == 13
 
     def test_free_text_passes_through_unchanged(self):
-        from validator.work_order_validator import validate_work_order
         order = self._make_order({"reported_problem": "The engine makes a strange ticking noise"})
         result = validate_work_order(order)
         fr = result.field_results["reported_problem"]
@@ -314,20 +333,17 @@ class TestFullWorkOrderValidation:
         assert fr.resolved_value == "The engine makes a strange ticking noise"
 
     def test_empty_optional_field_does_not_fail(self):
-        from validator.work_order_validator import validate_work_order
         result = validate_work_order(self._make_order({"remaining_tasks": ""}))
         assert result.field_results["remaining_tasks"].status == MatchStatus.PASS_THROUGH
         assert result.overall_status.value != "FAIL"
 
     def test_hallucinated_location_with_close_match(self):
-        from validator.work_order_validator import validate_work_order
         result = validate_work_order(self._make_order({"location": "Workshop Bay 3"}))
         fr = result.field_results["location"]
         assert "Bay 3" in fr.resolved_value
         assert fr.status in (MatchStatus.HIGH_CONF, MatchStatus.LOW_CONF)
 
     def test_algorithm_scores_present_in_result(self):
-        from validator.work_order_validator import validate_work_order
         result = validate_work_order(self._make_order())
         for field in ("worker", "company", "location", "vehicle_equipment"):
             assert isinstance(result.field_results[field].algorithm_scores, dict)

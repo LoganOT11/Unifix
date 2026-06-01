@@ -1,12 +1,16 @@
-"""Typed exception hierarchy for the work order audio processor."""
+"""Typed exception hierarchy for the work order processor."""
 
 
 class WorkOrderProcessorError(Exception):
     """Base exception for this application."""
 
 
-class AudioValidationError(WorkOrderProcessorError):
+class InputValidationError(WorkOrderProcessorError):
     """File failed pre-flight validation."""
+
+
+# Backward-compatible alias.
+AudioValidationError = InputValidationError
 
 
 class APICallError(WorkOrderProcessorError):

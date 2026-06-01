@@ -2,7 +2,8 @@
 
 from .exceptions import (
     WorkOrderProcessorError,
-    AudioValidationError,
+    InputValidationError,
+    AudioValidationError,   # backward-compatible alias
     APICallError,
     ResponseParseError,
     SchemaValidationError,
@@ -19,13 +20,14 @@ from .logging_config import configure_logging, sanitize_log_message
 __all__ = [
     # Exceptions
     "WorkOrderProcessorError",
+    "InputValidationError",
     "AudioValidationError",
     "APICallError",
     "ResponseParseError",
     "SchemaValidationError",
     "CryptoError",
     "VideoExtractionError",
-    # Validator
+    # Validators
     "validate_audio_file",
     "validate_video_file",
     # Video extractor

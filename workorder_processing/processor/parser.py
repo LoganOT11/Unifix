@@ -1,5 +1,7 @@
 """Parse, validate, and wrap Gemini API responses."""
 
+from __future__ import annotations
+
 import datetime
 import hashlib
 import json
@@ -15,27 +17,21 @@ from .exceptions import ResponseParseError, SchemaValidationError
 
 logger = logging.getLogger("work_order_processor")
 
-# ---------------------------------------------------------------------------
-# JSON Schema for extracted work-order data
-# ---------------------------------------------------------------------------
 _SCHEMAS_DIR = Path(__file__).resolve().parent.parent / "schemas"
+
+# Default fuzzy fields used when no config is supplied (audio v1 behaviour).
+_DEFAULT_FUZZY_FIELDS = frozenset({
+    "worker", "company", "location", "vehicle_equipment", "parts_used"
+})
+
 
 def _load_schema(version: str) -> dict:
     with open(_SCHEMAS_DIR / f"work_order_{version}.json", "r", encoding="utf-8") as fh:
         return json.load(fh)
 
-WORK_ORDER_SCHEMA = _load_schema("v1")
 
-
-# ---------------------------------------------------------------------------
-# Parse AI response
-# ---------------------------------------------------------------------------
 def parse_ai_json(raw_text: str | None) -> dict:
-    """
-    Strip markdown fences and parse JSON from an AI response.
-
-    Raises ResponseParseError if the text is None, empty, or not valid JSON.
-    """
+    """Strip markdown fences and parse JSON from an AI response."""
     if not raw_text:
         raise ResponseParseError(
             "AI returned an empty or null response — the request may have been "
@@ -55,27 +51,17 @@ def parse_ai_json(raw_text: str | None) -> dict:
         ) from exc
 
 
-# ---------------------------------------------------------------------------
-# Schema validation
-# ---------------------------------------------------------------------------
 def validate_extracted_data(data: dict, schema_version: str = "v1") -> None:
-    """
-    Validate *data* against the named work-order JSON schema.
-
-    Raises SchemaValidationError with a human-readable message on mismatch.
-    """
-    schema = WORK_ORDER_SCHEMA if schema_version == "v1" else _load_schema(schema_version)
+    """Validate *data* against the named work-order JSON schema."""
+    schema = _load_schema(schema_version)
     try:
         jsonschema.validate(instance=data, schema=schema)
     except jsonschema.ValidationError as exc:
         raise SchemaValidationError(str(exc)) from exc
 
 
-# ---------------------------------------------------------------------------
-# Response envelope
-# ---------------------------------------------------------------------------
 def build_response_envelope(
-    audio_path: str,
+    source_path: str,
     raw_response: genai_types.GenerateContentResponse,
     extracted: dict,
     model_id: str,
@@ -84,14 +70,11 @@ def build_response_envelope(
     schema_version: str = "1.0",
 ) -> dict:
     """
-    Wrap the extracted data with audit metadata:
-      - source file hash
-      - model & token usage
-      - finish reason
+    Wrap extracted data with audit metadata (source hash, token usage, etc.).
     """
-    audio_bytes = Path(audio_path).read_bytes()
+    source_bytes = Path(source_path).read_bytes()
 
-    usage = {}
+    usage: dict = {}
     if hasattr(raw_response, "usage_metadata") and raw_response.usage_metadata:
         u = raw_response.usage_metadata
         usage["prompt_tokens"] = getattr(u, "prompt_token_count", None)
@@ -103,13 +86,13 @@ def build_response_envelope(
             getattr(raw_response.candidates[0], "finish_reason", "UNKNOWN")
         )
 
-    envelope = {
+    envelope: dict = {
         "schema_version": schema_version,
         "processed_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "source_file": {
-            "name": os.path.basename(audio_path),
-            "sha256": hashlib.sha256(audio_bytes).hexdigest(),
-            "size_bytes": len(audio_bytes),
+            "name": os.path.basename(source_path),
+            "sha256": hashlib.sha256(source_bytes).hexdigest(),
+            "size_bytes": len(source_bytes),
         },
         "model": model_id,
         "usage": usage,
@@ -127,17 +110,18 @@ def build_response_envelope(
     return envelope
 
 
-FUZZY_FIELDS = {"worker", "company", "location", "vehicle_equipment", "parts_used"}
-
-
-def extract_confidence_markers(raw_json: dict) -> tuple[dict, dict[str, str]]:
+def extract_confidence_markers(
+    raw_json: dict,
+    fuzzy_fields: frozenset[str] | None = None,
+) -> tuple[dict, dict[str, str]]:
     """
-    Split Gemini response into clean work order fields and confidence markers.
+    Split Gemini response into clean work-order fields and confidence markers.
 
     Returns:
-        work_order: dict with only the 13 schema fields (no __confidence keys)
+        work_order: dict with only the schema fields (no __confidence keys)
         confidences: {"worker": "HIGH", "company": "MEDIUM", ...}
     """
+    fields = fuzzy_fields if fuzzy_fields is not None else _DEFAULT_FUZZY_FIELDS
     work_order: dict = {}
     confidences: dict[str, str] = {}
 
@@ -147,14 +131,11 @@ def extract_confidence_markers(raw_json: dict) -> tuple[dict, dict[str, str]]:
             if not field_name or field_name.endswith("__confidence"):
                 logger.warning("Skipping malformed confidence key: %s", key)
                 continue
-            if value is None:
-                confidences[field_name] = "MEDIUM"
-            else:
-                confidences[field_name] = str(value).upper()
+            confidences[field_name] = "MEDIUM" if value is None else str(value).upper()
         else:
             work_order[key] = value
 
-    for f in FUZZY_FIELDS:
+    for f in fields:
         confidences.setdefault(f, "MEDIUM")
 
     return work_order, confidences

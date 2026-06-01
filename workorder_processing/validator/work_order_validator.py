@@ -1,32 +1,45 @@
-from .fuzzy_resolver import resolve_field, resolve_parts_used, resolve_field_with_gemini_confidence
+"""Orchestrate post-extraction field validation for a work order."""
+
+from __future__ import annotations
+
+from .fuzzy_resolver import FuzzyResolver
 from .time_validator import validate_time_field
 from .resolution import compute_overall_status
 from .models import FieldResult, MatchStatus, ValidationResult
 
-FUZZY_FIELDS = {"worker", "company", "location", "vehicle_equipment"}
-TIME_FIELDS  = {"start_time", "end_time", "total_time_spent"}
-FREE_TEXT_FIELDS = {
-    "reported_problem", "diagnosis_cause", "work_performed",
-    "future_recommendations", "remaining_tasks",
-}
-
 
 def validate_work_order(
     extracted: dict,
+    config,          # ValidationConfig from config module
+    provider,        # ReferenceDataProvider from db.protocol
     confidences: dict[str, str] | None = None,
 ) -> ValidationResult:
-    field_results: dict[str, FieldResult] = {}
+    """
+    Validate each field in *extracted* according to *config*.
+
+    Fuzzy fields are resolved against *provider*; time fields are normalised;
+    everything else passes through as-is.
+    """
+    resolver = FuzzyResolver(
+        config.fuzzy_fields,
+        provider,
+        thresholds=config.thresholds,
+    )
+    fuzzy_field_names = {fc.name for fc in config.fuzzy_fields}
+    time_fields = set(config.time_fields)
     conf = confidences or {}
+
+    field_results: dict[str, FieldResult] = {}
 
     for field_name, raw_value in extracted.items():
         raw = str(raw_value) if raw_value is not None else ""
 
-        if field_name in FUZZY_FIELDS or field_name == "parts_used":
+        if field_name in fuzzy_field_names:
             gemini_conf = conf.get(field_name, "MEDIUM")
-            field_results[field_name] = resolve_field_with_gemini_confidence(
+            field_results[field_name] = resolver.resolve_field_with_gemini_confidence(
                 field_name, raw, gemini_conf
             )
-        elif field_name in TIME_FIELDS:
+        elif field_name in time_fields:
             field_results[field_name] = validate_time_field(field_name, raw)
         else:
             field_results[field_name] = FieldResult(
@@ -36,7 +49,11 @@ def validate_work_order(
                 status=MatchStatus.PASS_THROUGH,
             )
 
-    overall, unresolved, review = compute_overall_status(field_results)
+    overall, unresolved, review = compute_overall_status(
+        field_results,
+        required_resolved_fields=config.required_resolved_fields,
+        review_trigger_fields=config.review_trigger_fields,
+    )
     resolved_json = {fname: fr.resolved_value for fname, fr in field_results.items()}
 
     return ValidationResult(
