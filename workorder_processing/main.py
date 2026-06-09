@@ -99,13 +99,15 @@ def main() -> None:
                         help="Directory for output files (default: input file directory).")
     parser.add_argument("--plaintext", "-p", action="store_true",
                         help="Also write a plaintext .json sidecar alongside the encrypted output.")
+    parser.add_argument("--config", "-c", default=None,
+                        help="Document config name to use (e.g. audio_v1_fr). Overrides auto-detected default.")
     args = parser.parse_args()
 
     log_file = os.environ.get("PROCESSOR_LOG", str(Path(__file__).resolve().parent / DEFAULT_LOG_PATH))
     logger = configure_logging(log_file=log_file)
 
     mode = args.mode or _auto_detect_mode(args.input_file)
-    config = load_document_config(_config_name(mode))
+    config = load_document_config(args.config if args.config else _config_name(mode))
     provider = InMemoryProvider()
     pipeline = get_pipeline(mode, config, provider)
 
