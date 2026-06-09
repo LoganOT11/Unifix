@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data noupdate="1">
+        <record id="default_gemini_model" model="ir.config_parameter">
+            <field name="key">unifix.gemini_model</field>
+            <field name="value">gemini-2.5-pro</field>
+        </record>
+        <record id="default_max_video_size" model="ir.config_parameter">
+            <field name="key">unifix.max_video_size_mb</field>
+            <field name="value">1024</field>
+        </record>
+        <record id="default_cleanup_age" model="ir.config_parameter">
+            <field name="key">unifix.cleanup_age_hours</field>
+            <field name="value">1</field>
+        </record>
+        <record id="default_max_keyframes" model="ir.config_parameter">
+            <field name="key">unifix.max_keyframes</field>
+            <field name="value">12</field>
+        </record>
+        <record id="default_frame_quality" model="ir.config_parameter">
+            <field name="key">unifix.frame_quality</field>
+            <field name="value">3</field>
+        </record>
+    </data>
+</odoo>

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="group_unifix_user" model="res.groups">
+        <field name="name">User</field>
+        <field name="category_id" ref="base.module_category_services"/>
+        <field name="comment">Can upload videos and view own jobs.</field>
+    </record>
+
+    <record id="group_unifix_manager" model="res.groups">
+        <field name="name">Manager</field>
+        <field name="category_id" ref="base.module_category_services"/>
+        <field name="implied_ids" eval="[(4, ref('group_unifix_user'))]"/>
+        <field name="comment">Full access to all jobs, settings, and keyframes.</field>
+    </record>
+</odoo>
