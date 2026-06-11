@@ -52,6 +52,8 @@ class UnifixWorkorderJob(models.Model):
     # Stored media (audio & image only; video is never persisted)
     media_file = fields.Binary(attachment=True)
     media_filename = fields.Char()
+    # HTML5 audio player (raw streaming via /web/content — no base64).
+    audio_player = fields.Html(compute='_compute_audio_player', sanitize=False)
 
     # Temp working file (always for video; transient for audio/image processing)
     tmp_path = fields.Char()
@@ -105,6 +107,21 @@ class UnifixWorkorderJob(models.Model):
         for rec in self:
             rec.keyframe_count = len(rec.keyframe_ids)
 
+    @api.depends('media_file', 'media_kind', 'media_filename')
+    def _compute_audio_player(self):
+        for rec in self:
+            if rec.media_kind == 'audio' and rec.media_file and isinstance(rec.id, int):
+                url = (
+                    "/web/content?model=unifix.workorder.job"
+                    f"&id={rec.id}&field=media_file&filename={rec.media_filename or 'audio'}"
+                )
+                rec.audio_player = (
+                    '<audio controls preload="metadata" style="width:100%;max-width:520px" '
+                    f'src="{url}"></audio>'
+                )
+            else:
+                rec.audio_player = False
+
     # ── Actions ──────────────────────────────────────────────────────────────
 
     def action_process(self):
@@ -156,8 +173,12 @@ class UnifixWorkorderJob(models.Model):
             envelope = self._run_pipeline(tmp_path)
             self._apply_envelope(envelope)
 
-            # Video is never stored: delete its temp file now that we're done.
+            # Video: transcript/segments/keyframes BEFORE deleting the (never-stored) video.
             if self.media_kind == 'video':
+                try:
+                    self._process_video_extras(tmp_path)
+                except Exception:
+                    _logger.exception("Video extras (transcript/keyframes) failed for job %s", self.id)
                 self._safe_unlink(self.tmp_path)
                 self.tmp_path = False
 
@@ -311,6 +332,229 @@ class UnifixWorkorderJob(models.Model):
             return OdooReferenceDataProvider(self.env)
         from db.memory import InMemoryProvider
         return InMemoryProvider()
+
+    # ── Keyframe extraction (video only) ─────────────────────────────────────
+    #
+    # Strategy: Gemini returns timestamps + captions for show-and-tell moments
+    # from the AUDIO (no video tokens); we treat those as candidates, then use
+    # OpenCV to pick the sharpest, well-exposed frame in a window around each
+    # (absorbing timestamp drift + say→show lag), de-duplicate, cap, and compress
+    # only the survivors. Stills are stored as captioned unifix.video.keyframe
+    # records (shown in the Frames tab). Pure-local selection — no video to Gemini.
+
+    _KF_WINDOW_BEFORE = 0.3      # seconds before the cue to start scanning
+    _KF_WINDOW_AFTER = 1.5       # seconds after the cue (bias toward the "show")
+    _KF_MAX_SCAN = 60            # max frames decoded per candidate
+    _KF_DEDUP_DISTANCE = 10      # aHash Hamming distance below which frames dup
+    _KF_MIN_BRIGHT = 25
+    _KF_MAX_BRIGHT = 235
+
+    def _keyframes_enabled(self):
+        val = self.env['ir.config_parameter'].sudo().get_param('unifix.enable_keyframes', 'True')
+        return str(val).strip().lower() in ('1', 'true', 'yes', 'on')
+
+    def _process_video_extras(self, video_path):
+        """One audio pass → transcript + segments + keyframe cues; then extract
+        sharp, deduped, captioned keyframes. No video tokens, video not stored."""
+        if not self._keyframes_enabled():
+            return
+        import cv2
+
+        ICP = self.env['ir.config_parameter'].sudo()
+        max_kf = int(ICP.get_param('unifix.max_keyframes', '8'))
+
+        # 1) Single Gemini audio call: transcript, segments, and keyframe cues.
+        analysis = self._gemini_video_analysis(video_path)
+        self._store_transcript_segments(analysis)
+        cues = analysis.get('cues') or []
+
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            _logger.warning("Job %s: cannot open video for keyframes", self.id)
+            return
+        try:
+            fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+            frames_n = cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0
+            duration = (frames_n / fps) if fps else 0.0
+
+            candidates = self._candidate_timestamps(cues, duration)
+            picked = []
+            for t, caption in candidates:
+                best = self._grab_best_frame(cap, t)
+                if best is not None:
+                    picked.append((t, caption, best))   # best = (sharpness, frame)
+        finally:
+            cap.release()
+
+        keyframes = self._dedupe_and_cap(picked, max_kf)     # -> [(t, caption, jpeg_bytes)]
+        self._store_keyframes(keyframes)
+        self._link_keyframes_to_segments()
+        _logger.info("Job %s: %d keyframes, %d segments (%d cues, %d candidates)",
+                     self.id, len(keyframes), len(self.segment_ids),
+                     len(cues), len(candidates))
+
+    def _gemini_video_analysis(self, video_path):
+        """One Gemini audio pass → {transcript, segments, cues}. No video tokens."""
+        from processor.video_extractor import extract_audio_from_video
+        from processor.gemini_client import call_gemini_with_retry
+        from processor.parser import parse_ai_json
+
+        ICP = self.env['ir.config_parameter'].sudo()
+        model_id = ICP.get_param('unifix.gemini_model', 'gemini-2.5-pro')
+        prompt = (
+            "You are reviewing the AUDIO of a field-service technician's walkthrough "
+            "video. Return JSON with three keys:\n"
+            "- \"transcript\": full verbatim transcript of everything spoken.\n"
+            "- \"segments\": array of {\"start\": <sec>, \"end\": <sec>, \"text\": <text>} "
+            "splitting the transcript into logical 5-30 second chunks with accurate times.\n"
+            "- \"cues\": array of {\"t\": <sec>, \"quote\": <short exact phrase>, "
+            "\"caption\": <3-6 word description of the object shown>} for 4-12 moments where "
+            "the technician points out/shows/describes something PHYSICAL (deictic cues like "
+            "'here','this','look at','you can see', or naming a part/component/equipment/"
+            "location), ordered by time.\n"
+            "All times are seconds from the start."
+        )
+        audio_tmp = None
+        try:
+            audio_bytes, audio_mime, audio_tmp = extract_audio_from_video(video_path)
+            client = self._gemini_client()
+            resp = call_gemini_with_retry(client, model_id, audio_bytes, audio_mime, prompt)
+            data = parse_ai_json(resp.text)
+        except Exception:
+            _logger.exception("Job %s: video audio analysis failed", self.id)
+            return {}
+        finally:
+            self._safe_unlink(audio_tmp)
+
+        cues = []
+        for c in (data.get('cues') or []):
+            try:
+                t = float(c.get('t'))
+            except (TypeError, ValueError):
+                continue
+            cues.append((t, (c.get('caption') or c.get('quote') or '').strip()))
+        return {
+            'transcript': data.get('transcript') or '',
+            'segments': data.get('segments') or [],
+            'cues': cues,
+        }
+
+    def _store_transcript_segments(self, analysis):
+        """Persist the transcript and (re)create timestamped segment records."""
+        self.transcript = (analysis.get('transcript') or '').strip() or False
+        Segment = self.env['unifix.video.segment'].sudo()
+        self.segment_ids.sudo().unlink()
+        for i, s in enumerate(analysis.get('segments') or []):
+            text = (s.get('text') or '').strip()
+            if not text:
+                continue
+            try:
+                start = float(s.get('start') or 0)
+                end = float(s.get('end') or 0)
+            except (TypeError, ValueError):
+                start = end = 0.0
+            Segment.create({
+                'job_id': self.id,
+                'sequence': (i + 1) * 10,
+                'start_time': start,
+                'end_time': end,
+                'start_time_display': self._fmt_ts(start),
+                'end_time_display': self._fmt_ts(end),
+                'text': text,
+            })
+
+    def _link_keyframes_to_segments(self):
+        """Attach each keyframe to the transcript segment nearest its timestamp."""
+        segs = self.segment_ids.sorted('start_time')
+        if not segs:
+            return
+        for kf in self.keyframe_ids:
+            t = kf.timestamp or 0.0
+            nearest = min(segs, key=lambda s: abs((s.start_time or 0.0) - t))
+            kf.sudo().segment_id = nearest.id
+
+    def _candidate_timestamps(self, cues, duration):
+        """Cue timestamps (primary) + uniform-interval fallback if too sparse."""
+        cands = [(t, cap) for (t, cap) in cues if 0 <= t <= (duration or t + 1)]
+        if len(cands) < 3 and duration and duration > 1:
+            n = 5
+            for i in range(1, n + 1):
+                cands.append((duration * i / (n + 1), ''))
+        return sorted(cands, key=lambda x: x[0])
+
+    def _grab_best_frame(self, cap, t):
+        """Return (sharpness, frame) for the sharpest well-exposed frame near t."""
+        import cv2
+        start = max(0.0, t - self._KF_WINDOW_BEFORE)
+        end = t + self._KF_WINDOW_AFTER
+        cap.set(cv2.CAP_PROP_POS_MSEC, start * 1000.0)
+        best = None
+        scanned = 0
+        while scanned < self._KF_MAX_SCAN:
+            pos = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
+            ret, frame = cap.read()
+            if not ret:
+                break
+            scanned += 1
+            if pos > end:
+                break
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            bright = float(gray.mean())
+            if bright < self._KF_MIN_BRIGHT or bright > self._KF_MAX_BRIGHT:
+                continue
+            sharp = cv2.Laplacian(gray, cv2.CV_64F).var()
+            if best is None or sharp > best[0]:
+                best = (sharp, frame.copy())
+        return best
+
+    def _dedupe_and_cap(self, picked, max_kf):
+        """De-duplicate near-identical frames (aHash), cap, return chronological."""
+        import cv2
+        import numpy as np
+
+        def ahash(frame):
+            g = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            g = cv2.resize(g, (8, 8), interpolation=cv2.INTER_AREA)
+            return (g > g.mean()).flatten()
+
+        # Keep the sharpest first so dups resolve to the best frame.
+        picked_sorted = sorted(picked, key=lambda x: x[2][0], reverse=True)
+        hashes, kept = [], []
+        for t, caption, (sharp, frame) in picked_sorted:
+            h = ahash(frame)
+            if any(int(np.count_nonzero(h != hk)) < self._KF_DEDUP_DISTANCE for hk in hashes):
+                continue
+            jpg = self._encode_jpeg(frame)
+            if not jpg:
+                continue
+            hashes.append(h)
+            kept.append((t, caption, jpg))
+            if len(kept) >= max_kf:
+                break
+        return sorted(kept, key=lambda x: x[0])
+
+    def _encode_jpeg(self, frame, max_dim=1280, quality=80):
+        import cv2
+        h, w = frame.shape[:2]
+        scale = min(1.0, max_dim / float(max(h, w) or 1))
+        if scale < 1.0:
+            frame = cv2.resize(frame, (int(w * scale), int(h * scale)),
+                               interpolation=cv2.INTER_AREA)
+        ok, buf = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, quality])
+        return buf.tobytes() if ok else None
+
+    def _store_keyframes(self, keyframes):
+        Keyframe = self.env['unifix.video.keyframe'].sudo()
+        for i, (t, caption, jpg) in enumerate(keyframes):
+            Keyframe.create({
+                'job_id': self.id,
+                'sequence': (i + 1) * 10,
+                'timestamp': t,
+                'timestamp_display': self._fmt_ts(t),
+                'image': base64.b64encode(jpg),
+                'image_filename': f'keyframe_{int(t * 1000):08d}.jpg',
+                'reason': caption or False,
+            })
 
     # ── Helpers ──────────────────────────────────────────────────────────────
 

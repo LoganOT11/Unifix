@@ -47,7 +47,8 @@
                             <field name="media_kind"/>
                             <field name="source_filename"/>
                             <field name="media_file" filename="media_filename"
-                                   invisible="media_kind == 'video'"/>
+                                   string="Audio file"
+                                   invisible="media_kind != 'audio'"/>
                             <field name="media_filename" invisible="1"/>
                             <field name="source_size_mb" string="Size (MB)"/>
                             <field name="source_hash" groups="base.group_no_one"/>
@@ -63,6 +64,8 @@
                         <!-- Work Order (audio/video, schema v1) -->
                         <page string="Work Order" name="work_order"
                               invisible="media_kind == 'image'">
+                            <field name="audio_player" widget="html" nolabel="1"
+                                   readonly="1" invisible="media_kind != 'audio'"/>
                             <group>
                                 <group string="Personnel">
                                     <field name="worker_name"/>
@@ -91,6 +94,10 @@
                         <!-- Form (image, schema v3) -->
                         <page string="Form" name="image_form"
                               invisible="media_kind != 'image'">
+                            <field name="media_file" widget="image"
+                                   filename="media_filename"
+                                   options="{'size': [600, 800]}"
+                                   nolabel="1"/>
                             <group>
                                 <group string="Header">
                                     <field name="worker_name"/>
@@ -146,11 +153,9 @@
                                     <field name="image"/>
                                     <templates>
                                         <t t-name="card">
-                                            <div class="o_kanban_image">
-                                                <img t-att-src="kanban_image('unifix.video.keyframe', 'image', record.id.raw_value)"
-                                                     alt="frame" class="o_image_64_max"/>
-                                            </div>
-                                            <div>
+                                            <field name="image" widget="image"
+                                                   options="{'size': [220, 160]}"/>
+                                            <div class="mt-2">
                                                 <strong><field name="timestamp_display"/></strong>
                                                 <div><field name="reason"/></div>
                                             </div>
