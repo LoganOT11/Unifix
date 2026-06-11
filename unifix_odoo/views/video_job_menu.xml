@@ -1,14 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <odoo>
-    <record id="menu_video_root" model="ir.ui.menu">
-        <field name="name">Unifix</field>
-        <field name="sequence" value="90"/>
-    </record>
+    <menuitem
+        id="menu_video_root"
+        name="Unifix"
+        sequence="90"/>
 
-    <record id="menu_video_jobs" model="ir.ui.menu">
-        <field name="name">Video Jobs</field>
-        <field name="parent_id" ref="menu_video_root"/>
-        <field name="action" ref="action_video_job"/>
-        <field name="sequence" value="10"/>
-    </record>
+    <menuitem
+        id="menu_video_jobs"
+        name="Video Jobs"
+        parent="menu_video_root"
+        action="action_video_job"
+        sequence="10"/>
 </odoo>

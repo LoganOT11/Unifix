@@ -3,11 +3,11 @@
     <record id="view_res_config_settings_form_inherit_unifix" model="ir.ui.view">
         <field name="name">res.config.settings.view.form.inherit.unifix</field>
         <field name="model">res.config.settings</field>
+        <field name="priority" eval="70"/>
         <field name="inherit_id" ref="base.res_config_settings_view_form"/>
         <field name="arch" type="xml">
-            <xpath expr="//div[hasclass('settings')]" position="inside">
-                <app string="Unifix" data_string="unifix" name="unifix_video"
-                     logo="/unifix_video/static/description/icon.png">
+            <xpath expr="//form" position="inside">
+                <app string="Unifix" data_string="unifix" name="unifix_video">
                     <block title="Gemini Configuration" name="gemini_config">
                         <setting string="API Key"
                                  help="Google Gemini API key (AIza... or AQ.... format)">

@@ -21,8 +21,6 @@ for job in jobs:
         </field>
         <field name="interval_number">1</field>
         <field name="interval_type">minutes</field>
-        <field name="numbercall">-1</field>
-        <field name="active">True</field>
     </record>
 
     <!-- Cleanup orphaned temp files every hour -->
@@ -30,31 +28,8 @@ for job in jobs:
         <field name="name">Unifix: Cleanup orphaned temp files</field>
         <field name="model_id" ref="model_unifix_video_job"/>
         <field name="state">code</field>
-        <field name="code">
-import os, glob, time, tempfile
-ICP = env['ir.config_parameter'].sudo()
-tmp_dir = ICP.get_param('unifix.temp_dir', tempfile.gettempdir())
-age_h = int(ICP.get_param('unifix.cleanup_age_hours', '1'))
-cutoff = time.time() - age_h * 3600
-for pat in ['unifix_*.mp4','unifix_*.mkv','unifix_*.mov','unifix_*.avi','unifix_*.webm','unifix_*.wav']:
-    for path in glob.glob(os.path.join(tmp_dir, pat)):
-        try:
-            if os.path.getmtime(path) &lt; cutoff:
-                os.unlink(path)
-        except OSError:
-            pass
-stale = env['unifix.video.job'].search([
-    ('state', 'in', ['received', 'processing']),
-    ('create_date', '&lt;', fields.Datetime.subtract(fields.Datetime.now(), hours=age_h)),
-])
-for job in stale:
-    if not job.tmp_path or not os.path.exists(job.tmp_path):
-        job.write({'state': 'failed',
-                   'error_message': 'Temp file expired before processing completed.'})
-        </field>
+        <field name="code">model._cleanup_orphaned_files()</field>
         <field name="interval_number">1</field>
         <field name="interval_type">hours</field>
-        <field name="numbercall">-1</field>
-        <field name="active">True</field>
     </record>
 </odoo>

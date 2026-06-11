@@ -354,3 +354,36 @@ class UnifixVideoJob(models.Model):
         """Format seconds as mm:ss."""
         m, s = divmod(int(seconds), 60)
         return f'{m:02d}:{s:02d}'
+
+    @api.model
+    def _cleanup_orphaned_files(self):
+        """Cleanup orphaned temp files (called by cron)."""
+        import glob
+        import time
+        import tempfile
+
+        ICP = self.env['ir.config_parameter'].sudo()
+        tmp_dir = ICP.get_param('unifix.temp_dir', tempfile.gettempdir())
+        age_h = int(ICP.get_param('unifix.cleanup_age_hours', '1'))
+        cutoff = time.time() - age_h * 3600
+
+        for pat in ['unifix_*.mp4', 'unifix_*.mkv', 'unifix_*.mov',
+                     'unifix_*.avi', 'unifix_*.webm', 'unifix_*.wav']:
+            for path in glob.glob(os.path.join(tmp_dir, pat)):
+                try:
+                    if os.path.getmtime(path) < cutoff:
+                        os.unlink(path)
+                except OSError:
+                    pass
+
+        stale = self.search([
+            ('state', 'in', ['received', 'processing']),
+            ('create_date', '<',
+             fields.Datetime.subtract(fields.Datetime.now(), hours=age_h)),
+        ])
+        for job in stale:
+            if not job.tmp_path or not os.path.exists(job.tmp_path):
+                job.write({
+                    'state': 'failed',
+                    'error_message': 'Temp file expired before processing completed.'
+                })

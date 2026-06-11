@@ -136,7 +136,7 @@
         <field name="name">unifix.video.job.search</field>
         <field name="model">unifix.video.job</field>
         <field name="arch" type="xml">
-            <search>
+            <search string="Video Jobs">
                 <field name="name"/>
                 <field name="source_filename"/>
                 <field name="worker_name"/>
@@ -150,7 +150,7 @@
                         domain="[('state','=','done')]"/>
                 <filter name="f_failed" string="Failed"
                         domain="[('state','=','failed')]"/>
-                <group expand="0" string="Group By">
+                <group>
                     <filter name="g_state" string="State"
                             context="{'group_by':'state'}"/>
                     <filter name="g_company" string="Company"
