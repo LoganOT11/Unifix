@@ -1,6 +1,8 @@
 id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
-access_video_job_user,unifix.video.job.user,model_unifix_video_job,base.group_user,1,1,1,0
-access_video_job_manager,unifix.video.job.manager,model_unifix_video_job,unifix_odoo.group_unifix_manager,1,1,1,1
+access_workorder_job_user,unifix.workorder.job.user,model_unifix_workorder_job,base.group_user,1,1,1,0
+access_workorder_job_manager,unifix.workorder.job.manager,model_unifix_workorder_job,unifix_odoo.group_unifix_manager,1,1,1,1
+access_workorder_task_user,unifix.workorder.task.user,model_unifix_workorder_task,base.group_user,1,0,0,0
+access_workorder_task_manager,unifix.workorder.task.manager,model_unifix_workorder_task,unifix_odoo.group_unifix_manager,1,1,1,1
 access_video_segment_user,unifix.video.segment.user,model_unifix_video_segment,base.group_user,1,0,0,0
 access_video_segment_manager,unifix.video.segment.manager,model_unifix_video_segment,unifix_odoo.group_unifix_manager,1,1,1,1
 access_keyframe_user,unifix.video.keyframe.user,model_unifix_video_keyframe,base.group_user,1,0,0,0

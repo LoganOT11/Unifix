@@ -39,10 +39,28 @@ Thumbs.db
 *.enc
 outputs/
 
-# Examples (user data)
-workorder_processing/audio/
-workorder_processing/images/
-workorder_processing/video/
+# Sample media fixtures (kept on disk for local testing, not committed)
+# Audio & video are safe to ignore repo-wide (no committed assets use them).
+*.wav
+*.mp3
+*.m4a
+*.flac
+*.ogg
+*.opus
+*.aac
+*.mp4
+*.mkv
+*.mov
+*.avi
+*.webm
+# Image samples — scoped to fixtures so the module icon (static/) stays tracked.
+unifix_odoo/tests/fixtures/*.jpg
+unifix_odoo/tests/fixtures/*.jpeg
+unifix_odoo/tests/fixtures/*.png
+unifix_odoo/tests/fixtures/*.webp
+unifix_odoo/tests/fixtures/*.heic
+unifix_odoo/tests/fixtures/*.heif
+unifix_odoo/tests/fixtures/*.pdf
 
 # Conda
 conda-bld/

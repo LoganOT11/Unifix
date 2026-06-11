@@ -1,0 +1,225 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- ═══════════════════ List View ═══════════════════ -->
+    <record id="view_workorder_job_list" model="ir.ui.view">
+        <field name="name">unifix.workorder.job.list</field>
+        <field name="model">unifix.workorder.job</field>
+        <field name="arch" type="xml">
+            <list>
+                <field name="name"/>
+                <field name="media_kind"/>
+                <field name="source_filename"/>
+                <field name="create_date"/>
+                <field name="state" widget="badge"
+                       decoration-success="state == 'done'"
+                       decoration-warning="state == 'processing'"
+                       decoration-danger="state == 'failed'"
+                       decoration-info="state == 'received'"/>
+                <field name="worker_name"/>
+                <field name="company"/>
+                <field name="validation_status"/>
+            </list>
+        </field>
+    </record>
+
+    <!-- ═══════════════════ Form View ═══════════════════ -->
+    <record id="view_workorder_job_form" model="ir.ui.view">
+        <field name="name">unifix.workorder.job.form</field>
+        <field name="model">unifix.workorder.job</field>
+        <field name="arch" type="xml">
+            <form>
+                <header>
+                    <button name="action_process" string="Process Now" type="object"
+                            class="btn-primary"
+                            invisible="state in ('processing', 'done', 'cancelled')"/>
+                    <button name="action_retry" string="Retry" type="object"
+                            class="btn-warning" invisible="state != 'failed'"/>
+                    <button name="action_cancel" string="Cancel" type="object"
+                            class="btn-secondary"
+                            invisible="state in ('done', 'cancelled')"/>
+                    <field name="state" widget="statusbar"
+                           statusbar_visible="received,processing,done"/>
+                </header>
+                <sheet>
+                    <div class="oe_title"><h1><field name="name"/></h1></div>
+                    <group>
+                        <group string="Source">
+                            <field name="media_kind"/>
+                            <field name="source_filename"/>
+                            <field name="media_file" filename="media_filename"
+                                   invisible="media_kind == 'video'"/>
+                            <field name="media_filename" invisible="1"/>
+                            <field name="source_size_mb" string="Size (MB)"/>
+                            <field name="source_hash" groups="base.group_no_one"/>
+                        </group>
+                        <group string="Processing">
+                            <field name="create_date"/>
+                            <field name="processed_at"/>
+                            <field name="retry_count"/>
+                            <field name="validation_status"/>
+                        </group>
+                    </group>
+                    <notebook>
+                        <!-- Work Order (audio/video, schema v1) -->
+                        <page string="Work Order" name="work_order"
+                              invisible="media_kind == 'image'">
+                            <group>
+                                <group string="Personnel">
+                                    <field name="worker_name"/>
+                                    <field name="company"/>
+                                    <field name="location"/>
+                                    <field name="vehicle_equipment"/>
+                                </group>
+                                <group string="Time">
+                                    <field name="start_time"/>
+                                    <field name="end_time"/>
+                                    <field name="total_time_spent"/>
+                                </group>
+                            </group>
+                            <group string="Details">
+                                <field name="reported_problem"/>
+                                <field name="diagnosis_cause"/>
+                                <field name="work_performed"/>
+                                <field name="parts_used"/>
+                            </group>
+                            <group string="Follow-up">
+                                <field name="future_recommendations"/>
+                                <field name="remaining_tasks"/>
+                            </group>
+                        </page>
+
+                        <!-- Form (image, schema v3) -->
+                        <page string="Form" name="image_form"
+                              invisible="media_kind != 'image'">
+                            <group>
+                                <group string="Header">
+                                    <field name="worker_name"/>
+                                    <field name="company"/>
+                                    <field name="client"/>
+                                    <field name="location"/>
+                                    <field name="wo_date"/>
+                                </group>
+                            </group>
+                            <field name="task_ids">
+                                <list>
+                                    <field name="sequence" widget="handle"/>
+                                    <field name="unit"/>
+                                    <field name="time_start"/>
+                                    <field name="time_end"/>
+                                    <field name="time_total"/>
+                                    <field name="description"/>
+                                    <field name="work_order_ref"/>
+                                </list>
+                            </field>
+                            <group string="Travel / Expenses / Labour (JSON)">
+                                <field name="extra_data_json" nolabel="1"/>
+                            </group>
+                            <group string="Follow-up">
+                                <field name="future_recommendations"/>
+                                <field name="remaining_tasks"/>
+                            </group>
+                        </page>
+
+                        <!-- Video transcript/keyframes (future feature) -->
+                        <page string="Transcript" name="transcript"
+                              invisible="media_kind != 'video'">
+                            <field name="transcript" widget="text"/>
+                        </page>
+                        <page string="Segments" name="segments"
+                              invisible="media_kind != 'video'">
+                            <field name="segment_ids">
+                                <list>
+                                    <field name="sequence" widget="handle"/>
+                                    <field name="start_time_display"/>
+                                    <field name="end_time_display"/>
+                                    <field name="text"/>
+                                    <field name="confidence" widget="progressbar"/>
+                                </list>
+                            </field>
+                        </page>
+                        <page string="Frames" name="frames"
+                              invisible="media_kind != 'video'">
+                            <field name="keyframe_ids" mode="kanban">
+                                <kanban>
+                                    <field name="timestamp_display"/>
+                                    <field name="reason"/>
+                                    <field name="image"/>
+                                    <templates>
+                                        <t t-name="card">
+                                            <div class="o_kanban_image">
+                                                <img t-att-src="kanban_image('unifix.video.keyframe', 'image', record.id.raw_value)"
+                                                     alt="frame" class="o_image_64_max"/>
+                                            </div>
+                                            <div>
+                                                <strong><field name="timestamp_display"/></strong>
+                                                <div><field name="reason"/></div>
+                                            </div>
+                                        </t>
+                                    </templates>
+                                </kanban>
+                            </field>
+                        </page>
+
+                        <!-- Raw extracted data (technical) -->
+                        <page string="Extracted Data" name="extracted"
+                              groups="base.group_no_one">
+                            <field name="extracted_json" nolabel="1"/>
+                        </page>
+
+                        <!-- Error -->
+                        <page string="Error" name="error"
+                              invisible="state != 'failed'">
+                            <field name="error_message" readonly="1"/>
+                        </page>
+                    </notebook>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <!-- ═══════════════════ Search View ═══════════════════ -->
+    <record id="view_workorder_job_search" model="ir.ui.view">
+        <field name="name">unifix.workorder.job.search</field>
+        <field name="model">unifix.workorder.job</field>
+        <field name="arch" type="xml">
+            <search string="Work Order Jobs">
+                <field name="name"/>
+                <field name="source_filename"/>
+                <field name="worker_name"/>
+                <field name="company"/>
+                <filter name="f_audio" string="Audio" domain="[('media_kind','=','audio')]"/>
+                <filter name="f_image" string="Image" domain="[('media_kind','=','image')]"/>
+                <filter name="f_video" string="Video" domain="[('media_kind','=','video')]"/>
+                <separator/>
+                <filter name="f_received" string="Received" domain="[('state','=','received')]"/>
+                <filter name="f_processing" string="Processing" domain="[('state','=','processing')]"/>
+                <filter name="f_done" string="Done" domain="[('state','=','done')]"/>
+                <filter name="f_failed" string="Failed" domain="[('state','=','failed')]"/>
+                <group>
+                    <filter name="g_kind" string="Media Kind" context="{'group_by':'media_kind'}"/>
+                    <filter name="g_state" string="State" context="{'group_by':'state'}"/>
+                    <filter name="g_company" string="Company" context="{'group_by':'company'}"/>
+                    <filter name="g_date" string="Created" context="{'group_by':'create_date:month'}"/>
+                </group>
+            </search>
+        </field>
+    </record>
+
+    <!-- ═══════════════════ Window Action ═══════════════════ -->
+    <record id="action_workorder_job" model="ir.actions.act_window">
+        <field name="name">Work Order Jobs</field>
+        <field name="res_model">unifix.workorder.job</field>
+        <field name="view_mode">list,form</field>
+        <field name="search_view_id" ref="view_workorder_job_search"/>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">
+                No work-order jobs yet
+            </p>
+            <p>
+                Upload audio, an image, or a video. Audio and image media are stored;
+                video is processed to audio only and not retained. Work-order fields are
+                extracted automatically.
+            </p>
+        </field>
+    </record>
+</odoo>

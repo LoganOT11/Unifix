@@ -5,6 +5,21 @@
             <field name="key">unifix.gemini_model</field>
             <field name="value">gemini-2.5-pro</field>
         </record>
+        <!-- Auth: this deployment uses Vertex AI with ADC (no API key).
+             Project/location resolve from GOOGLE_CLOUD_PROJECT /
+             GOOGLE_CLOUD_LOCATION env vars unless overridden via
+             unifix.gcp_project / unifix.gcp_location params. -->
+        <record id="default_use_vertexai" model="ir.config_parameter">
+            <field name="key">unifix.use_vertexai</field>
+            <field name="value">True</field>
+        </record>
+        <!-- Field validation source: 'memory' = bundled fixtures (works out of
+             the box); 'odoo' = validate against live records via
+             OdooReferenceDataProvider. Switch to 'odoo' once master data exists. -->
+        <record id="default_reference_provider" model="ir.config_parameter">
+            <field name="key">unifix.reference_provider</field>
+            <field name="value">memory</field>
+        </record>
         <record id="default_max_video_size" model="ir.config_parameter">
             <field name="key">unifix.max_video_size_mb</field>
             <field name="value">1024</field>

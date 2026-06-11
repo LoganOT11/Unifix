@@ -9,8 +9,20 @@
             <xpath expr="//form" position="inside">
                 <app string="Unifix" data_string="unifix" name="unifix_video">
                     <block title="Gemini Configuration" name="gemini_config">
+                        <setting string="Use Vertex AI (ADC)"
+                                 help="Authenticate via Vertex AI + ADC (no API key)">
+                            <field name="unifix_use_vertexai"/>
+                        </setting>
+                        <setting string="GCP Project"
+                                 help="Vertex project (else GOOGLE_CLOUD_PROJECT)">
+                            <field name="unifix_gcp_project"/>
+                        </setting>
+                        <setting string="GCP Location"
+                                 help="Vertex location (else GOOGLE_CLOUD_LOCATION, default 'global')">
+                            <field name="unifix_gcp_location"/>
+                        </setting>
                         <setting string="API Key"
-                                 help="Google Gemini API key (AIza... or AQ.... format)">
+                                 help="Only used when Vertex AI is disabled">
                             <field name="unifix_gemini_api_key" password="True"/>
                         </setting>
                         <setting string="Model"
@@ -18,10 +30,24 @@
                             <field name="unifix_gemini_model"/>
                         </setting>
                     </block>
+                    <block title="Field Validation" name="validation_config">
+                        <setting string="Reference Data Source"
+                                 help="Fixtures (out of the box) or live Odoo records">
+                            <field name="unifix_reference_provider"/>
+                        </setting>
+                    </block>
                     <block title="Processing" name="processing_config">
                         <setting string="Max Video Size"
                                  help="Maximum upload size in MB">
                             <field name="unifix_max_video_size_mb"/>
+                        </setting>
+                        <setting string="Max Audio Size"
+                                 help="Maximum audio upload size in MB">
+                            <field name="unifix_max_audio_size_mb"/>
+                        </setting>
+                        <setting string="Max Image Size"
+                                 help="Maximum image upload size in MB">
+                            <field name="unifix_max_image_size_mb"/>
                         </setting>
                         <setting string="Temp Directory"
                                  help="Directory for temp video files (default: /tmp)">

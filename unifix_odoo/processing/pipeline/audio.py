@@ -17,7 +17,7 @@ logger = logging.getLogger("work_order_processor")
 class AudioPipeline(BasePipeline):
 
     def validate_input(self, ctx: PipelineContext) -> dict:
-        safe_root = str(Path.cwd())
+        safe_root = ctx.safe_root or str(Path.cwd())
         meta = validate_audio_file(str(ctx.source_path), safe_root=safe_root)
         logger.info(
             "Validated audio file: %s  (%s, %s, %s bytes)",

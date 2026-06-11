@@ -18,7 +18,7 @@ logger = logging.getLogger("work_order_processor")
 class ImagePipeline(BasePipeline):
 
     def validate_input(self, ctx: PipelineContext) -> dict:
-        safe_root = str(Path.cwd())
+        safe_root = ctx.safe_root or str(Path.cwd())
         meta = validate_image_file(str(ctx.source_path), safe_root=safe_root)
         logger.info(
             "Validated image file: %s  (%s, %s bytes)",

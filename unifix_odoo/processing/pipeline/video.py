@@ -20,7 +20,7 @@ class VideoPipeline(AudioPipeline):
     """Inherits all audio pipeline steps; overrides input validation and preprocessing."""
 
     def validate_input(self, ctx: PipelineContext) -> dict:
-        safe_root = str(Path.cwd())
+        safe_root = ctx.safe_root or str(Path.cwd())
         meta = validate_video_file(str(ctx.source_path), safe_root=safe_root)
         logger.info(
             "Validated video file: %s  (%s, %s bytes)",

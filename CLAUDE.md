@@ -1,174 +1,130 @@
-# CLAUDE.md — Unifix Work Order Processor
+# CLAUDE.md — Unifix Work Order Processor (Odoo 19)
 
-## Conda Environment
+The product is the **Odoo 19 module `unifix_odoo`**: users upload audio, image, or
+video through the web UI and Gemini extracts structured work-order data. The
+extraction engine (formerly the standalone `workorder_processing/` CLI) is now
+**vendored inside the module** at `unifix_odoo/processing/`. The CLI has been
+retired — there is one copy of the logic, and it lives in the module.
+
+## Environment
 
 ```bash
-conda activate unifix
-conda env create -f environment.yml   # full rebuild
-pip install -r requirements.txt       # pip deps only
+conda activate unifix     # has Odoo deps AND the engine deps (genai, cv2, magic, rapidfuzz, …)
 ```
 
-## API Keys
+Odoo source: `/home/logan/Repos/odoo` (module symlinked into `addons/unifix_odoo`).
+Dev database: `unifix_test` (Postgres 18).
 
-Copy `.env` and fill in your keys (gitignored, never committed).
+> **Always export `OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1`** when running Odoo here.
+> The image pipeline imports OpenCV/numpy→OpenBLAS, which otherwise spawns one
+> thread per core and segfaults on thread-constrained hosts (WSL). The module also
+> sets these defensively in `unifix_odoo/__init__.py`.
 
-Required: `GOOGLE_API_KEY` (legacy `AIza…` or new `AQ.…`). For `AQ.` keys also set: `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION`, `GOOGLE_GENAI_USE_VERTEXAI`.
+## Auth — Vertex AI + ADC (no API key)
 
-| Variable | Default | Description |
+This host authenticates to Gemini via **Vertex AI + Application Default Credentials**,
+not an API key. `.env` (repo root) sets `GOOGLE_GENAI_USE_VERTEXAI=True`,
+`GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION=global`. The worker builds the client
+with `genai.Client(vertexai=True, project=…, location=…)` — **no `api_key`**.
+
+Config params (`ir.config_parameter`, seeded in `data/default_params.xml`):
+
+| Param | Default | Purpose |
 |---|---|---|
-| `GOOGLE_API_KEY` | *(required)* | Gemini API key |
-| `GEMINI_MODEL` | `gemini-3.1-flash-lite` | Model ID |
-| `PROCESSOR_LOG` | `processor.log` | Audit log path |
-| `ENCRYPTION_KEY_PATH` | `~/.workorder_processor.key` | Fernet key location |
+| `unifix.use_vertexai` | `True` | Use Vertex/ADC (else fall back to `unifix.gemini_api_key`) |
+| `unifix.gcp_project` / `unifix.gcp_location` | *(env)* | Override project/location |
+| `unifix.gemini_model` | `gemini-2.5-pro` | Model ID |
+| `unifix.reference_provider` | `memory` | Field validation source: `memory` (fixtures) or `odoo` (live records) |
+| `unifix.max_{video,audio,image}_size_mb` | 1024 / 200 / 25 | Upload caps |
 
-## Project Structure
+## Module structure
 
 ```
-workorder_processing/
-├── main.py                        ← Thin CLI shim (~157 lines)
-├── audio/
-│   ├── main.py                    ← Legacy standalone audio script (predates pipeline; kept for reference)
-│   └── test_audio.wav             ← Sample audio file for testing
-├── video/
-│   └── 8224.mp4                   ← Sample video file for testing
-├── images/                        ← Sample image files and their outputs
-├── outputs/                       ← Default output directory for encrypted JSON
-├── config/
-│   ├── __init__.py                ← DocumentConfig dataclasses + load_document_config()
-│   ├── settings.py                ← App-level constants (DEFAULT_MODEL, IMAGE_EXTENSIONS)
-│   └── document_types/
-│       ├── audio_v1.yaml          ← Field weights, thresholds, fuzzy/time/free-text routing
-│       ├── audio_v1_fr.yaml       ← French-language audio config variant
-│       └── image_v3.yaml          ← Image document type config
-├── pipeline/
-│   ├── __init__.py                ← @register() decorator + get_pipeline() factory
-│   ├── base.py                    ← BasePipeline ABC + PipelineContext dataclass
-│   ├── audio.py                   ← AudioPipeline
-│   ├── video.py                   ← VideoPipeline (extends AudioPipeline)
-│   └── image.py                   ← ImagePipeline
-├── db/
-│   ├── protocol.py                ← ReferenceDataProvider Protocol
-│   ├── memory.py                  ← InMemoryProvider (wraps reference_data.py lists)
-│   └── reference_data.py          ← Static fixture data (replace with real DB in prod)
-├── processor/
-│   ├── gemini_client.py           ← create_client(), call_gemini_with_retry(…, prompt), call_gemini_generic()
-│   ├── prompt_loader.py           ← load_prompt(name, schema_version, schema_format)
-│   ├── parser.py                  ← parse_ai_json(), validate_extracted_data(), build_response_envelope()
-│   ├── veracity.py                ← should_run_veracity(), run_veracity_check(), apply_veracity_corrections()
-│   ├── image_preprocessor.py      ← OpenCV quality assessment, deskew, CLAHE, binarize
-│   ├── image_processor.py         ← validate_image_file(), process_image(…, prompt)
-│   ├── validator.py               ← validate_audio_file(), validate_video_file()
-│   ├── video_extractor.py         ← extract_audio_from_video(), is_video_extension()
-│   ├── exceptions.py              ← InputValidationError, APICallError, etc.
-│   ├── logging_config.py          ← Structured logging + PII sanitizer
-│   └── crypto.py                  ← Fernet encrypt/decrypt
-├── validator/
-│   ├── models.py                  ← MatchStatus, OverallStatus, FieldResult, ValidationResult
-│   ├── fuzzy_resolver.py          ← FuzzyResolver class (config-driven rapidfuzz ensemble)
-│   ├── time_validator.py          ← Clock time + duration normalisation
-│   ├── resolution.py              ← compute_overall_status() → PASS / REVIEW / FAIL
-│   └── work_order_validator.py    ← validate_work_order(extracted, config, provider, confidences)
-├── prompts/                       ← Prompt templates loaded at runtime
-│   ├── audio_extraction_v1.txt    ← Audio extraction prompt (v1)
-│   ├── audio_extraction_v2.txt    ← Audio extraction prompt (v2)
-│   ├── audio_extraction_v2_fr.txt ← French audio extraction prompt
-│   ├── image_extraction_v1.txt    ← Image extraction prompt (v1)
-│   ├── image_extraction_v3.txt    ← Image extraction prompt (v3)
-│   └── veracity_v1.txt            ← Veracity check prompt
-├── schemas/
-│   ├── work_order_v1.json         ← Audio schema (13 flat string fields)
-│   ├── work_order_v1_fr.json      ← French audio schema variant
-│   └── work_order_v3.json         ← Image schema (nested: tasks[], travel, expenses)
-├── test_data/                     ← Edge-case fixtures for testing
-├── test_database/                 ← SQLite test database
-└── tests/                         ← 233 tests across 4 files
+unifix_odoo/
+├── __init__.py                 ← caps BLAS threads + puts processing/ on sys.path
+├── __manifest__.py             ← external_dependencies declared here
+├── controllers/upload.py       ← /unifix/upload — auto-detects audio|image|video
+├── models/
+│   ├── workorder_job.py        ← unifix.workorder.job — lifecycle + _process() dispatch
+│   ├── workorder_task.py       ← unifix.workorder.task — image task rows (schema v3)
+│   ├── reference_provider.py   ← OdooReferenceDataProvider (live-DB veracity seam)
+│   ├── video_segment.py / video_keyframe.py  ← dormant; for future video keyframes
+│   └── res_config_settings.py
+├── data/        ← cron.xml, default_params.xml
+├── views/       ← workorder_job_views.xml, _menu.xml, res_config_settings_views.xml
+├── security/    ← ir.model.access.csv, security.xml
+├── tests/       ← Odoo TransactionCase tests (+ fixtures/: test_audio.wav, sample_form.jpg)
+└── processing/                 ← VENDORED extraction engine (source root on sys.path)
+    ├── pipeline/ {base,audio,video,image}.py   ← get_pipeline(mode,cfg,provider).run(ctx)
+    ├── config/   {__init__.py, document_types/*.yaml}  ← load_document_config()
+    ├── processor/ {gemini_client,parser,validator,image_*,veracity,crypto,…}.py
+    ├── validator/ {fuzzy_resolver,time_validator,resolution,work_order_validator}.py
+    ├── db/        {protocol,memory,reference_data}.py   ← ReferenceDataProvider
+    ├── schemas/   work_order_v1.json (audio/video flat) · work_order_v3.json (image nested)
+    ├── prompts/   *.txt
+    └── tests/     321 pytest engine tests (+ pytest.ini, test_data/)
 ```
 
-## Quick Start
+## How processing works
+
+`controllers/upload.py` streams the upload to a temp file, auto-detects `media_kind`,
+and creates a `unifix.workorder.job` in state `received`. The cron worker (every minute)
+calls `job._process()`, which:
+
+1. Resolves a file path (video: temp file; audio/image: stored `media_file` → temp copy).
+2. Builds a Vertex client (`_gemini_client`) and a provider (`_reference_provider`).
+3. Runs `get_pipeline(mode, cfg, provider).run(ctx)` with `PipelineContext(serialize=False,
+   safe_root=<temp dir>)` — the engine's template: validate → preprocess → Gemini →
+   parse → schema-validate → (audio: fuzzy/time/veracity) → envelope.
+4. Maps `envelope['extracted_data']` onto the record (`_apply_workorder_flat` for
+   audio/video, `_apply_image` for image → header + `task_ids` + `extra_data_json`).
+
+**Media storage:** audio & image media persist in `media_file` (Binary `attachment=True`
+→ filestore). **Video is never stored** — audio is extracted, processed, and the temp
+video deleted. Keyframe extraction from video is a planned future feature (the
+segment/keyframe models are kept dormant for it).
+
+**Modes/configs:** audio & video → `audio_v1` (schema v1, fuzzy+time+veracity);
+image → `image_v3` (schema v3 nested tasks/travel/expenses, OpenCV preprocess, no fuzzy).
+
+## Run & verify (through Odoo)
 
 ```bash
-cd workorder_processing
-python main.py audio/test_audio.wav                    # audio (auto-detected)
-python main.py form.jpg --mode image                   # image (Uni-Fix form)
-python main.py video.mp4                               # video (auto-detected)
-python main.py audio/test_audio.wav -o outputs/ -p    # output dir + plaintext sidecar
-GEMINI_MODEL=gemini-2.5-pro python main.py audio/test_audio.wav
+cd /home/logan/Repos/odoo && conda activate unifix
+export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1
+
+# Install/upgrade (recreate dev DB if a model was renamed):
+python odoo-bin -d unifix_test -u unifix_odoo --stop-after-init --no-http --log-level=warn
+
+# End-to-end via odoo shell (load .env first for Vertex auth):
+set -a && . /home/logan/Repos/Unifix/.env && set +a
+python odoo-bin shell -d unifix_test --no-http   # create a job, set media_file, call job._process()
 ```
 
-## Pipeline Architecture
-
-Each mode is a `BasePipeline` subclass registered via `@register("audio"|"video"|"image")`. The shared `run()` template executes these steps in order:
-
-1. `validate_input()` — path traversal guard, extension allowlist, size bounds, MIME sniff
-2. `preprocess()` — read bytes (audio/video: ffmpeg extract; image: OpenCV enhance)
-3. `_load_prompt()` — loads from `config.prompt` + injects schema block
-4. `extract()` — `call_gemini_with_retry()` with exponential backoff (3 attempts, 429/5xx)
-5. `_parse()` — strip markdown fences → JSON → split `field__confidence` keys
-6. `_validate_schema()` — `jsonschema.validate()` against `work_order_{version}.json`
-7. `_validate_fields()` — `FuzzyResolver` + time normalisation (audio only; image skips)
-8. `_run_veracity()` — second Gemini pass if REVIEW/FAIL or any LOW confidence (audio only)
-9. `_build_envelope()` — wraps extracted data with SHA-256, token usage, validation trail
-10. `_serialize()` — Fernet-encrypted `.json.enc`; optional plaintext `.json` sidecar
-
-## Adding a New Document Type
-
-1. Create `config/document_types/{type}_v1.yaml` (copy `audio_v1.yaml` as template)
-2. Create `pipeline/{type}.py` with `@register("{type}")` on the subclass
-3. No other files need to change
-
-## Key APIs
-
-```python
-# Config loading
-from config import load_document_config
-cfg = load_document_config("audio_v1")   # DocumentConfig dataclass
-
-# Pipeline dispatch
-from pipeline import get_pipeline
-from db.memory import InMemoryProvider
-pipeline = get_pipeline("audio", cfg, InMemoryProvider())
-envelope = pipeline.run(ctx)             # PipelineContext
-
-# Field validation (audio v1)
-from validator.work_order_validator import validate_work_order
-result = validate_work_order(extracted, cfg.validation, provider, confidences)
-print(result.overall_status, result.unresolved_fields)
-
-# FuzzyResolver directly
-from validator.fuzzy_resolver import FuzzyResolver
-resolver = FuzzyResolver(cfg.validation.fuzzy_fields, provider, cfg.validation.thresholds)
-fr = resolver.resolve_field("worker", "James Hartwal")
-
-# Decrypt output
-from processor.crypto import read_encrypted_json
-import json
-print(json.dumps(read_encrypted_json("outputs/test_audio.json.enc"), indent=2))
-```
-
-## Validation Details (audio v1)
-
-**Field routing** (defined in `config/document_types/audio_v1.yaml`):
-- **Fuzzy DB match**: `worker`, `company`, `location`, `vehicle_equipment`, `parts_used`
-- **Time normalise**: `start_time`, `end_time`, `total_time_spent`
-- **Pass-through**: `reported_problem`, `diagnosis_cause`, `work_performed`, `future_recommendations`, `remaining_tasks`
-
-**Scores:** EXACT ≥ 100 · HIGH_CONF ≥ 85 · LOW_CONF 60–84 · NO_MATCH < 60.
-Gemini confidence boosts: HIGH +5, LOW −10. To change weights/thresholds, edit the YAML.
-
-**Time normalisation:** `start_time`/`end_time` → `HH:MM` 24h; `total_time_spent` → `Xh Ym`.
-Accepts: `8am`, `08:30 PM`, `08:30:00`, `30m`, `2.5 hours`, `90 min`, `1:30`, `100:30`.
-
-## Common Tasks
+## Tests
 
 ```bash
-# Tests
-cd workorder_processing && python -m pytest tests/ -v
-python -m pytest tests/test_edge_cases.py -v        # 124 edge-case tests
-python -m pytest tests/test_fuzzy_resolver.py -v    # 49 fuzzy-matching tests
-python -m pytest tests/test_veracity.py -v          # 24 veracity tests
-python -m pytest tests/test_image_processing.py -v  # 36 image-processing tests
+# Engine tests (pure pytest, no Odoo) — run from the vendored source root:
+cd unifix_odoo/processing && python -m pytest tests/ -q          # 321 tests
 
-# Validate a file without calling Gemini
-python -c "from processor.validator import validate_audio_file; \
-  print(validate_audio_file('audio/test_audio.wav'))"
+# Odoo model tests (mock the pipeline, no Gemini calls):
+cd /home/logan/Repos/odoo && OPENBLAS_NUM_THREADS=1 \
+  python odoo-bin -d unifix_test -u unifix_odoo --test-enable --stop-after-init --no-http
+```
+
+## Adding a new document type (engine)
+
+Drop a `processing/config/document_types/{type}.yaml` + `processing/schemas/{schema}.json`
++ `processing/prompts/{prompt}.txt`, and register a `pipeline/{type}.py` with
+`@register("{type}")`. Then map it in `workorder_job._run_pipeline`.
+
+## Validation details (audio v1)
+
+Fuzzy DB match: `worker, company, location, vehicle_equipment, parts_used`.
+Time normalise: `start_time, end_time, total_time_spent`. Everything else passes through.
+Scores: EXACT ≥ 100 · HIGH ≥ 85 · LOW 60–84 · NO_MATCH < 60 (Gemini conf: HIGH +5, LOW −10).
+Edit weights/thresholds in `processing/config/document_types/audio_v1.yaml`. Switch
+`unifix.reference_provider` to `odoo` to validate against live records via
+`OdooReferenceDataProvider` (maps entities → `hr.employee`, `res.partner`, `fleet.vehicle`,
+`product.product`; guarded so missing models degrade to no candidates).
 ```

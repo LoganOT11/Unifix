@@ -1,16 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <odoo>
-    <!-- Process pending video jobs every minute -->
-    <record id="ir_cron_process_video_jobs" model="ir.cron">
-        <field name="name">Unifix: Process pending video jobs</field>
-        <field name="model_id" ref="model_unifix_video_job"/>
+    <!-- Process pending work-order jobs every minute -->
+    <record id="ir_cron_process_workorder_jobs" model="ir.cron">
+        <field name="name">Unifix: Process pending work-order jobs</field>
+        <field name="model_id" ref="model_unifix_workorder_job"/>
         <field name="state">code</field>
         <field name="code">
-jobs = env['unifix.video.job'].search(
+jobs = env['unifix.workorder.job'].search(
     [('state', '=', 'received')], order='create_date asc', limit=5)
 for job in jobs:
     try:
-        job._process_video()
+        job._process()
         env.cr.commit()
     except Exception:
         env.cr.rollback()
@@ -24,9 +24,9 @@ for job in jobs:
     </record>
 
     <!-- Cleanup orphaned temp files every hour -->
-    <record id="ir_cron_cleanup_temp_videos" model="ir.cron">
+    <record id="ir_cron_cleanup_temp_files" model="ir.cron">
         <field name="name">Unifix: Cleanup orphaned temp files</field>
-        <field name="model_id" ref="model_unifix_video_job"/>
+        <field name="model_id" ref="model_unifix_workorder_job"/>
         <field name="state">code</field>
         <field name="code">model._cleanup_orphaned_files()</field>
         <field name="interval_number">1</field>

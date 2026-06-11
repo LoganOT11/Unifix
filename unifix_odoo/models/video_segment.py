@@ -13,7 +13,7 @@ class UnifixVideoSegment(models.Model):
     _order = 'job_id, sequence, start_time'
 
     job_id = fields.Many2one(
-        'unifix.video.job', required=True,
+        'unifix.workorder.job', required=True,
         ondelete='cascade', index=True,
     )
     sequence = fields.Integer(default=10)

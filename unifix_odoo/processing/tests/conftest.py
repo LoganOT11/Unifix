@@ -1,6 +1,8 @@
 import sys
 import os
 
+# Put the vendored processing source root (unifix_odoo/processing) on sys.path
+# so the engine's absolute imports (`from config...`, `from processor...`) resolve.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # ---------------------------------------------------------------------------

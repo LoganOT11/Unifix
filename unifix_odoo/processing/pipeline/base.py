@@ -40,6 +40,12 @@ class PipelineContext:
     config: DocumentConfig
     plaintext: bool = False
     extra: dict = field(default_factory=dict)
+    # Root the path-traversal guard against (defaults to cwd for CLI use).
+    # Odoo passes the temp-upload directory so /tmp files validate.
+    safe_root: str | None = None
+    # When False, skip writing the encrypted .json.enc to disk — callers that
+    # consume the returned envelope directly (e.g. Odoo) don't need it.
+    serialize: bool = True
 
 
 class BasePipeline(ABC):
@@ -182,6 +188,8 @@ class BasePipeline(ABC):
         return envelope
 
     def _serialize(self, ctx: PipelineContext, envelope: dict) -> None:
+        if not ctx.serialize:
+            return
         out_dir = ctx.output_dir or ctx.source_path.parent
         out_dir.mkdir(parents=True, exist_ok=True)
         out_path = str(out_dir / ctx.source_path.stem)

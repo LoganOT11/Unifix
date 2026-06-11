@@ -13,7 +13,7 @@ class UnifixVideoKeyframe(models.Model):
     _order = 'job_id, sequence, timestamp'
 
     job_id = fields.Many2one(
-        'unifix.video.job', required=True,
+        'unifix.workorder.job', required=True,
         ondelete='cascade', index=True,
     )
     segment_id = fields.Many2one(
