@@ -246,8 +246,10 @@ class UnifixWorkorderJob(models.Model):
                 'labour_summary': ed.get('labour_summary'),
             }, ensure_ascii=False, indent=2),
         })
-        self.task_ids.unlink()
-        Task = self.env['unifix.workorder.task']
+        # Task lines are backend-derived data; create them with elevated rights
+        # so processing works regardless of the triggering user's group.
+        self.task_ids.sudo().unlink()
+        Task = self.env['unifix.workorder.task'].sudo()
         for i, t in enumerate(ed.get('tasks') or []):
             tm = t.get('time') or {}
             Task.create({

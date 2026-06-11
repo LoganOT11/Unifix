@@ -35,10 +35,6 @@ class ResConfigSettings(models.TransientModel):
         config_parameter='unifix.gemini_model',
         default='gemini-2.5-pro',
     )
-    unifix_transcript_prompt = fields.Text(
-        string='Transcript Prompt',
-        config_parameter='unifix.transcript_prompt',
-    )
 
     # Field validation
     unifix_reference_provider = fields.Selection(
