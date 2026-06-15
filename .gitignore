@@ -64,3 +64,6 @@ unifix_odoo/tests/fixtures/*.pdf
 
 # Conda
 conda-bld/
+
+# Windows metadata
+*:Zone.Identifier

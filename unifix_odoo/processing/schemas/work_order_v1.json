@@ -31,6 +31,8 @@
     "remaining_tasks":        { "type": "string" },
     "worker":                 { "type": "string" },
     "company":                { "type": "string" },
-    "location":               { "type": "string" }
+    "client":                 { "type": "string" },
+    "location":               { "type": "string" },
+    "date":                   { "type": "string" }
   }
 }

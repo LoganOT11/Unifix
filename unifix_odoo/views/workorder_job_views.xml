@@ -45,12 +45,16 @@
                     <group>
                         <group string="Source">
                             <field name="media_kind"/>
+                            <field name="video_keyframe_mode"
+                                   invisible="media_kind != 'video'"/>
                             <field name="source_filename"/>
                             <field name="media_file" filename="media_filename"
                                    string="Audio file"
                                    invisible="media_kind != 'audio'"/>
                             <field name="media_filename" invisible="1"/>
-                            <field name="source_size_mb" string="Size (MB)"/>
+                            <field name="size_saving_display" string="Size"/>
+                            <field name="source_size_mb" string="Original (MB)"/>
+                            <field name="compressed_size_mb" string="Stored (MB)"/>
                             <field name="source_hash" groups="base.group_no_one"/>
                         </group>
                         <group string="Processing">
@@ -58,6 +62,7 @@
                             <field name="processed_at"/>
                             <field name="retry_count"/>
                             <field name="validation_status"/>
+                            <field name="token_cost_display" string="Gemini tokens"/>
                         </group>
                     </group>
                     <notebook>
@@ -70,7 +75,9 @@
                                 <group string="Personnel">
                                     <field name="worker_name"/>
                                     <field name="company"/>
+                                    <field name="client"/>
                                     <field name="location"/>
+                                    <field name="wo_date" string="Date"/>
                                     <field name="vehicle_equipment"/>
                                 </group>
                                 <group string="Time">
@@ -129,7 +136,7 @@
 
                         <!-- Video transcript/keyframes (future feature) -->
                         <page string="Transcript" name="transcript"
-                              invisible="media_kind != 'video'">
+                              invisible="media_kind == 'image'">
                             <field name="transcript" widget="text"/>
                         </page>
                         <page string="Segments" name="segments"
@@ -163,6 +170,19 @@
                                     </templates>
                                 </kanban>
                             </field>
+                        </page>
+
+                        <!-- Per-field deterministic match status (grounded confidence) -->
+                        <page string="Field Validation" name="field_validation"
+                              invisible="media_kind == 'image' or not validation_json">
+                            <div class="text-muted mb-2">
+                                Each closed-set field matched against the reference data
+                                (EXACT / HIGH_CONFIDENCE / LOW_CONFIDENCE / NO_MATCH /
+                                PASS_THROUGH). This grounded match — not LLM self-rating —
+                                is the field confidence.
+                            </div>
+                            <field name="validation_json" widget="ace"
+                                   options="{'mode': 'json'}" nolabel="1" readonly="1"/>
                         </page>
 
                         <!-- Raw extracted data (technical) -->

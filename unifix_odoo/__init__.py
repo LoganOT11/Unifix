@@ -18,3 +18,10 @@ if _PROCESSING_ROOT not in sys.path:
 
 from . import controllers
 from . import models
+
+
+def post_init_hook(env):
+    """On fresh install, seed editable AI prompt/schema records from the
+    vendored files (upgrades go through migrations/19.0.3.0.0)."""
+    from .ai_seed import seed_ai_records
+    seed_ai_records(env)

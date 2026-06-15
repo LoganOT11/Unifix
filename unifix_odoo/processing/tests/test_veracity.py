@@ -41,10 +41,13 @@ class TestShouldRunVeracity:
         confidences = {"worker": "MEDIUM", "company": "MEDIUM", "location": "MEDIUM"}
         assert should_run_veracity(result, confidences) is False
 
-    def test_pass_with_one_low_confidence_triggers_veracity(self):
+    def test_pass_ignores_gemini_confidence(self):
+        # Gemini self-confidence no longer triggers veracity — only the
+        # deterministic validation status does, so a PASS stays a PASS even
+        # when a field carries a LOW self-confidence marker.
         result = _make_validation_result("PASS")
         confidences = {"worker": "HIGH", "company": "LOW", "location": "MEDIUM"}
-        assert should_run_veracity(result, confidences) is True
+        assert should_run_veracity(result, confidences) is False
 
     def test_pass_with_empty_confidences_skips_veracity(self):
         result = _make_validation_result("PASS")

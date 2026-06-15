@@ -30,7 +30,11 @@ Extract ONLY the following fields:
   available. If unknown, use "".
 - company : The name of the maintenance company. Capture abbreviations if that is all
   stated. If unknown, use "".
+- client : The customer or account the work was done for, if distinct from the maintenance
+  company. If not stated, use "".
 - location : Where the work was performed. As specific as stated. If unknown, use "".
+- date : The date of the work, as stated. Normalise to YYYY/MM/DD only when unambiguous;
+  otherwise capture verbatim. If not stated, use "".
 </field_definitions>
 
 <extraction_rules>
@@ -41,22 +45,14 @@ Extract ONLY the following fields:
 5. Return ONLY the JSON object — no preamble, no markdown fences, no explanation.
 </extraction_rules>
 
-<confidence_markers>
-For each of these five fields, also emit a confidence suffix:
-  vehicle_equipment, worker, company, location, parts_used
-Format: "field_name__confidence": "HIGH" | "MEDIUM" | "LOW"
-- HIGH   = value was stated explicitly and unambiguously
-- MEDIUM = value was implied, partially stated, or required minor inference
-- LOW    = best guess; not confident it is correct
-</confidence_markers>
-
 <output_schema>
 {schema_block}
 </output_schema>
 
 <few_shot_examples>
 Example 1 — Clean input (all fields explicit):
-  Transcript: "This is James Hartwell from Hartwell Industrial Services. Date is the 14th.
+  Transcript: "This is James Hartwell from Hartwell Industrial Services, on a job for the
+  client Northgate Mining. Date is 2026/05/14.
   I'm out at Main Workshop Bay 1 working on Truck TRK-001. The operator reported the engine
   warning light was on and the oil pressure was low. Diagnosis: clogged oil filter and worn
   serpentine belt. I replaced the heavy-duty oil filter and serpentine belt. Parts used:
@@ -75,12 +71,9 @@ Example 1 — Clean input (all fields explicit):
     "remaining_tasks": "",
     "worker": "James Hartwell",
     "company": "Hartwell Industrial Services",
+    "client": "Northgate Mining",
     "location": "Main Workshop — Bay 1",
-    "worker__confidence": "HIGH",
-    "company__confidence": "HIGH",
-    "location__confidence": "HIGH",
-    "vehicle_equipment__confidence": "HIGH",
-    "parts_used__confidence": "HIGH"
+    "date": "2026/05/14"
   }
 
 Example 2 — Ambiguous input (partial names, inferred values):
@@ -101,12 +94,9 @@ Example 2 — Ambiguous input (partial names, inferred values):
     "remaining_tasks": "",
     "worker": "Tom",
     "company": "",
+    "client": "",
     "location": "Northern Depot — Yard B",
-    "worker__confidence": "LOW",
-    "company__confidence": "LOW",
-    "location__confidence": "MEDIUM",
-    "vehicle_equipment__confidence": "MEDIUM",
-    "parts_used__confidence": "HIGH"
+    "date": ""
   }
 </few_shot_examples>
 

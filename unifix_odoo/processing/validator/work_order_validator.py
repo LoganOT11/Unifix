@@ -27,7 +27,10 @@ def validate_work_order(
     )
     fuzzy_field_names = {fc.name for fc in config.fuzzy_fields}
     time_fields = set(config.time_fields)
-    conf = confidences or {}
+    # NOTE: *confidences* (Gemini self-reported HIGH/MEDIUM/LOW) is accepted for
+    # backward compatibility but intentionally no longer influences the result.
+    # LLM self-confidence is poorly calibrated; field confidence is now derived
+    # purely from the deterministic match against the reference data.
 
     field_results: dict[str, FieldResult] = {}
 
@@ -35,10 +38,10 @@ def validate_work_order(
         raw = str(raw_value) if raw_value is not None else ""
 
         if field_name in fuzzy_field_names:
-            gemini_conf = conf.get(field_name, "MEDIUM")
-            field_results[field_name] = resolver.resolve_field_with_gemini_confidence(
-                field_name, raw, gemini_conf
-            )
+            if field_name == "parts_used":
+                field_results[field_name] = resolver.resolve_parts_used(raw)
+            else:
+                field_results[field_name] = resolver.resolve_field(field_name, raw)
         elif field_name in time_fields:
             field_results[field_name] = validate_time_field(field_name, raw)
         else:

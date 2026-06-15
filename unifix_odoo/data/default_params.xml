@@ -3,7 +3,7 @@
     <data noupdate="1">
         <record id="default_gemini_model" model="ir.config_parameter">
             <field name="key">unifix.gemini_model</field>
-            <field name="value">gemini-2.5-pro</field>
+            <field name="value">gemini-3.1-flash-lite</field>
         </record>
         <!-- Auth: this deployment uses Vertex AI with ADC (no API key).
              Project/location resolve from GOOGLE_CLOUD_PROJECT /
@@ -35,6 +35,33 @@
         <record id="default_frame_quality" model="ir.config_parameter">
             <field name="key">unifix.frame_quality</field>
             <field name="value">3</field>
+        </record>
+        <!-- Ingest compression: store small derivatives, not originals. -->
+        <record id="default_audio_opus_bitrate" model="ir.config_parameter">
+            <field name="key">unifix.audio_opus_bitrate</field>
+            <field name="value">24k</field>
+        </record>
+        <record id="default_image_max_dim" model="ir.config_parameter">
+            <field name="key">unifix.image_max_dim</field>
+            <field name="value">2048</field>
+        </record>
+        <record id="default_image_jpeg_quality" model="ir.config_parameter">
+            <field name="key">unifix.image_jpeg_quality</field>
+            <field name="value">80</field>
+        </record>
+        <!-- Default video keyframe mode (per-job overridable):
+             'audio_cues'   — cheapest, sharpest frame near each audio cue;
+             'verified'     — adds one cheap image call so the AI confirms the
+                              frame shows what was described (recommended);
+             'gemini_video' — Gemini watches the whole video (duration-priced). -->
+        <record id="default_video_keyframe_mode" model="ir.config_parameter">
+            <field name="key">unifix.video_keyframe_mode</field>
+            <field name="value">verified</field>
+        </record>
+        <!-- Blended $/million tokens used only for the UI cost estimate. -->
+        <record id="default_token_price_per_million" model="ir.config_parameter">
+            <field name="key">unifix.token_price_per_million</field>
+            <field name="value">0.30</field>
         </record>
     </data>
 </odoo>

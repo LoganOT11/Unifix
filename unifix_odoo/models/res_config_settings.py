@@ -33,7 +33,7 @@ class ResConfigSettings(models.TransientModel):
     unifix_gemini_model = fields.Char(
         string='Gemini Model',
         config_parameter='unifix.gemini_model',
-        default='gemini-2.5-pro',
+        default='gemini-3.1-flash-lite',
     )
 
     # Field validation

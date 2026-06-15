@@ -31,6 +31,8 @@
     "remaining_tasks":        { "type": "string", "description": "Travaux reportés à une visite future" },
     "worker":                 { "type": "string", "description": "Nom complet du technicien" },
     "company":                { "type": "string", "description": "Nom de la société de maintenance" },
-    "location":               { "type": "string", "description": "Lieu où le travail a été effectué" }
+    "client":                 { "type": "string", "description": "Nom du client ou du compte, tel qu'énoncé" },
+    "location":               { "type": "string", "description": "Lieu où le travail a été effectué" },
+    "date":                   { "type": "string", "description": "Date du bon de travail (format AAAA/MM/JJ si possible)" }
   }
 }

@@ -29,7 +29,11 @@ Extrayez UNIQUEMENT les champs suivants :
   disponible. Si inconnu, utilisez "".
 - company : Le nom de la société de maintenance. Capturez les abréviations si c'est tout ce qui est
   indiqué. Si inconnu, utilisez "".
+- client : Le client ou le compte pour lequel le travail a été effectué, s'il est distinct de la
+  société de maintenance. Si non indiqué, utilisez "".
 - location : L'endroit où le travail a été effectué. Aussi précis que ce qui est indiqué. Si inconnu, utilisez "".
+- date : La date du travail, telle qu'énoncée. Normalisez en AAAA/MM/JJ seulement si non ambigu ;
+  sinon capturez verbatim. Si non indiquée, utilisez "".
 </field_definitions>
 
 <extraction_rules>
@@ -40,22 +44,14 @@ Extrayez UNIQUEMENT les champs suivants :
 5. Retournez UNIQUEMENT l'objet JSON — sans préambule, sans délimiteurs markdown, sans explication.
 </extraction_rules>
 
-<confidence_markers>
-Pour chacun de ces cinq champs, émettez également un suffixe de confiance :
-  vehicle_equipment, worker, company, location, parts_used
-Format : "field_name__confidence": "HIGH" | "MEDIUM" | "LOW"
-- HIGH   = la valeur a été énoncée explicitement et sans ambiguïté
-- MEDIUM = la valeur était implicite, partiellement énoncée ou a nécessité une inférence mineure
-- LOW    = meilleure estimation ; niveau de confiance faible
-</confidence_markers>
-
 <output_schema>
 {schema_block}
 </output_schema>
 
 <few_shot_examples>
 Exemple 1 — Entrée claire (tous les champs explicites) :
-  Transcription : "Ici James Hartwell de Hartwell Services Industriels. Date : le 14.
+  Transcription : "Ici James Hartwell de Hartwell Services Industriels, sur un chantier pour le
+  client Northgate Mining. Date : 2026/05/14.
   Je suis à l'Atelier Principal Baie 1 en train de travailler sur le Camion TRK-001. L'opérateur a signalé que
   le voyant moteur était allumé et que la pression d'huile était basse. Diagnostic : filtre à huile bouché et
   courroie d'accessoires usée. J'ai remplacé le filtre à huile renforcé et la courroie d'accessoires. Pièces utilisées :
@@ -74,12 +70,9 @@ Exemple 1 — Entrée claire (tous les champs explicites) :
     "remaining_tasks": "",
     "worker": "James Hartwell",
     "company": "Hartwell Services Industriels",
+    "client": "Northgate Mining",
     "location": "Atelier Principal — Baie 1",
-    "worker__confidence": "HIGH",
-    "company__confidence": "HIGH",
-    "location__confidence": "HIGH",
-    "vehicle_equipment__confidence": "HIGH",
-    "parts_used__confidence": "HIGH"
+    "date": "2026/05/14"
   }
 
 Exemple 2 — Entrée ambiguë (noms partiels, valeurs déduites) :
@@ -100,12 +93,9 @@ Exemple 2 — Entrée ambiguë (noms partiels, valeurs déduites) :
     "remaining_tasks": "",
     "worker": "Tom",
     "company": "",
+    "client": "",
     "location": "Dépôt Nord — Cour B",
-    "worker__confidence": "LOW",
-    "company__confidence": "LOW",
-    "location__confidence": "MEDIUM",
-    "vehicle_equipment__confidence": "MEDIUM",
-    "parts_used__confidence": "HIGH"
+    "date": ""
   }
 </few_shot_examples>
 

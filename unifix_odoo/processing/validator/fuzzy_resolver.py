@@ -115,6 +115,17 @@ class FuzzyResolver:
 
         raw_value = raw_value.strip()
         candidates = self._provider.get_names(field_name)
+        if not candidates:
+            # No reference data for this entity (master data not loaded yet).
+            # We can't verify the value, so pass it through rather than failing
+            # it — an empty master list must not flag every record.
+            return FieldResult(
+                field_name=field_name,
+                raw_value=raw_value,
+                resolved_value=raw_value,
+                status=MatchStatus.PASS_THROUGH,
+                notes="No reference data available for this entity.",
+            )
         best_match, score, algo_scores, top_candidates = _find_best_match(
             raw_value, candidates, fc.weights
         )
@@ -148,6 +159,14 @@ class FuzzyResolver:
 
         tokens = [t.strip() for t in raw_value.split(",") if t.strip()]
         candidates = self._provider.get_names("parts_used")
+        if not candidates:
+            return FieldResult(
+                field_name="parts_used",
+                raw_value=raw_value,
+                resolved_value=raw_value,
+                status=MatchStatus.PASS_THROUGH,
+                notes="No reference data available for parts.",
+            )
 
         resolved_tokens: list[str] = []
         all_scores: list[float] = []

@@ -18,13 +18,13 @@ _VERACITY_PROMPT_TEMPLATE = load_prompt("veracity_v1")
 
 def should_run_veracity(
     validation_result,
-    gemini_confidences: dict[str, str],
+    gemini_confidences: dict[str, str] | None = None,
 ) -> bool:
-    if validation_result.overall_status.value in VERACITY_TRIGGER_STATUSES:
-        return True
-    if any(v in VERACITY_TRIGGER_CONFIDENCE for v in gemini_confidences.values()):
-        return True
-    return False
+    # Trigger purely on the deterministic validation status (a field that could
+    # not be resolved against the reference data). Gemini's self-reported
+    # confidence is no longer used — it is poorly calibrated — but the parameter
+    # is kept for backward compatibility.
+    return validation_result.overall_status.value in VERACITY_TRIGGER_STATUSES
 
 
 def run_veracity_check(

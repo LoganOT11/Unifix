@@ -1,6 +1,6 @@
 {
     "name": "Unifix Work Order Processing",
-    "version": "19.0.2.0.0",
+    "version": "19.0.3.0.0",
     "category": "Services",
     "summary": "AI work-order extraction from audio, image, and video (Gemini)",
     "description": """
@@ -13,7 +13,7 @@
     "author": "Unifix",
     "website": "https://unifix.example.com",
     "license": "LGPL-3",
-    "depends": ["base"],
+    "depends": ["base", "mail"],
     "external_dependencies": {
         "python": [
             "google.genai",
@@ -32,8 +32,10 @@
         "data/default_params.xml",
         "views/workorder_job_views.xml",
         "views/workorder_job_menu.xml",
+        "views/ai_prompt_views.xml",
         "views/res_config_settings_views.xml",
     ],
+    "post_init_hook": "post_init_hook",
     "installable": True,
     "auto_install": False,
     "application": True,

@@ -17,8 +17,6 @@ from .exceptions import ResponseParseError, SchemaValidationError
 
 logger = logging.getLogger("work_order_processor")
 
-_SCHEMAS_DIR = Path(__file__).resolve().parent.parent / "schemas"
-
 # Default fuzzy fields used when no config is supplied (audio v1 behaviour).
 _DEFAULT_FUZZY_FIELDS = frozenset({
     "worker", "company", "location", "vehicle_equipment", "parts_used"
@@ -26,8 +24,10 @@ _DEFAULT_FUZZY_FIELDS = frozenset({
 
 
 def _load_schema(version: str) -> dict:
-    with open(_SCHEMAS_DIR / f"work_order_{version}.json", "r", encoding="utf-8") as fh:
-        return json.load(fh)
+    # Delegate to the prompt_loader so the schema used for validation matches
+    # the one rendered into the prompt — including any host (Odoo) override.
+    from .prompt_loader import load_schema
+    return load_schema(version)
 
 
 def parse_ai_json(raw_text: str | None) -> dict:
@@ -104,6 +104,17 @@ def build_response_envelope(
             "overall_status": validation_result.overall_status.value,
             "unresolved_fields": validation_result.unresolved_fields,
             "review_fields": validation_result.review_fields,
+            # Per-field deterministic match detail — this is the real, grounded
+            # "confidence": how each value scored against the reference data.
+            "fields": {
+                fname: {
+                    "status": fr.status.value,
+                    "score": fr.score,
+                    "resolved_value": fr.resolved_value,
+                    "matched": bool(fr.matched_db_entry),
+                }
+                for fname, fr in validation_result.field_results.items()
+            },
         }
     if veracity_info is not None:
         envelope["veracity_pass"] = veracity_info

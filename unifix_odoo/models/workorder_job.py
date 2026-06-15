@@ -3,16 +3,16 @@
 Handles three media kinds through one lifecycle
 (draft → received → processing → done | failed | cancelled):
 
-  * audio  — stored; sent to the audio pipeline (schema v1).
-  * image  — stored; sent to the image pipeline (schema v3, nested tasks).
-  * video  — NOT stored (too large); audio is extracted and run through the
-             audio pipeline, then the video temp file is deleted. Keyframe
-             extraction/storage from video is a planned future feature — the
-             segment/keyframe models and helpers below are kept dormant for it.
+  * audio  — stored (compressed to Opus); work-order fields + transcript.
+  * image  — stored (resized JPEG); image pipeline (schema v3, nested tasks).
+  * video  — NOT stored; audio is extracted for work-order fields + transcript,
+             keyframe stills are extracted at Gemini-chosen cue timestamps, then
+             the video is deleted.
 
 Extraction is delegated to the vendored engine under ``unifix_odoo/processing``
-(``get_pipeline(mode, cfg, provider).run(ctx)``); this model only orchestrates
-I/O, auth, provider selection, and maps the returned envelope onto fields.
+(``get_pipeline(mode, cfg, provider).run(ctx)``). OpenCV keyframe selection and
+ffmpeg/cv2 compression live in ``processor.keyframes`` / ``processor.compression``;
+this model orchestrates I/O, auth, provider selection, and maps results to fields.
 """
 
 import os
@@ -27,6 +27,9 @@ from odoo import models, fields, api
 from odoo.exceptions import UserError
 
 _logger = logging.getLogger(__name__)
+
+# Single source of truth for the default model (overridable via unifix.gemini_model).
+_DEFAULT_MODEL = "gemini-3.1-flash-lite"
 
 
 class UnifixWorkorderJob(models.Model):
@@ -58,20 +61,26 @@ class UnifixWorkorderJob(models.Model):
     # Temp working file (always for video; transient for audio/image processing)
     tmp_path = fields.Char()
     source_filename = fields.Char()
-    source_size = fields.Integer()
+    source_size = fields.Integer(help="Original uploaded size (bytes)")
     source_size_mb = fields.Float(compute='_compute_size_mb')
+    compressed_size = fields.Integer(help="Size of what is actually stored (bytes)")
+    compressed_size_mb = fields.Float(compute='_compute_size_mb')
+    size_saving_display = fields.Char(compute='_compute_size_saving')
     source_hash = fields.Char(index=True)
 
     # ── Extraction output ────────────────────────────────────────────────────
     extracted_json = fields.Text(help="Full extracted_data envelope (any kind)")
     validation_status = fields.Char(help="Overall validation status from the engine")
+    validation_json = fields.Text(
+        help="Per-field match status against the reference data — the grounded, "
+             "deterministic confidence (replaces LLM self-confidence)")
 
     # Work-order fields (audio/video schema v1; image reuses worker/company/location)
     worker_name = fields.Char()
     company = fields.Char()
-    client = fields.Char(help="Image work orders: client/account name")
+    client = fields.Char(help="Client/account the work was done for")
     location = fields.Char()
-    wo_date = fields.Char(help="Image work orders: date as written")
+    wo_date = fields.Char(help="Work-order date as written/spoken")
     vehicle_equipment = fields.Char()
     reported_problem = fields.Text()
     diagnosis_cause = fields.Text()
@@ -92,28 +101,83 @@ class UnifixWorkorderJob(models.Model):
     segment_ids = fields.One2many('unifix.video.segment', 'job_id')
     keyframe_ids = fields.One2many('unifix.video.keyframe', 'job_id')
     keyframe_count = fields.Integer(compute='_compute_keyframe_count')
+    video_keyframe_mode = fields.Selection([
+        ('audio_cues', 'Audio cues → sharpest frame (cheapest, no extra AI)'),
+        ('verified', 'Audio cues → AI verifies best frame (recommended)'),
+        ('gemini_video', 'Full video → AI picks frames (best captions, most tokens)'),
+    ], string="Keyframe mode",
+        default=lambda self: self.env['ir.config_parameter'].sudo().get_param(
+            'unifix.video_keyframe_mode', 'verified'),
+        help="How video keyframes are chosen. 'verified' adds one cheap image "
+             "call so the AI confirms each chosen frame actually shows what was "
+             "described; 'gemini_video' sends the whole video (duration-priced).")
 
     error_message = fields.Text()
     retry_count = fields.Integer(default=0)
     processed_at = fields.Datetime()
 
-    @api.depends('source_size')
+    # Gemini token usage (summed across all calls for this job)
+    input_tokens = fields.Integer(help="Gemini input (prompt) tokens")
+    output_tokens = fields.Integer(help="Gemini output (response) tokens")
+    token_cost_display = fields.Char(compute='_compute_token_cost')
+
+    @api.depends('source_size', 'compressed_size')
     def _compute_size_mb(self):
         for rec in self:
             rec.source_size_mb = (rec.source_size or 0) / (1024.0 * 1024.0)
+            rec.compressed_size_mb = (rec.compressed_size or 0) / (1024.0 * 1024.0)
+
+    @api.depends('source_size', 'compressed_size')
+    def _compute_size_saving(self):
+        for rec in self:
+            o, c = rec.source_size or 0, rec.compressed_size or 0
+            if o and c:
+                pct = (1 - c / float(o)) * 100
+                rec.size_saving_display = (
+                    f"{o / 1e6:.2f} MB → {c / 1e6:.2f} MB ({pct:.0f}% smaller)")
+            elif o:
+                rec.size_saving_display = f"{o / 1e6:.2f} MB"
+            else:
+                rec.size_saving_display = ''
 
     @api.depends('keyframe_ids')
     def _compute_keyframe_count(self):
         for rec in self:
             rec.keyframe_count = len(rec.keyframe_ids)
 
+    @api.depends('input_tokens', 'output_tokens')
+    def _compute_token_cost(self):
+        rate = float(self.env['ir.config_parameter'].sudo()
+                     .get_param('unifix.token_price_per_million', '0.30'))
+        for r in self:
+            tot = (r.input_tokens or 0) + (r.output_tokens or 0)
+            r.token_cost_display = (
+                f"{r.input_tokens:,} in + {r.output_tokens:,} out = {tot:,} tokens "
+                f"(≈ ${tot / 1e6 * rate:.4f})") if tot else ''
+
+    def _add_usage(self, prompt_tokens, response_tokens):
+        self.input_tokens = (self.input_tokens or 0) + int(prompt_tokens or 0)
+        self.output_tokens = (self.output_tokens or 0) + int(response_tokens or 0)
+
+    @staticmethod
+    def _usage_from_response(resp):
+        u = getattr(resp, 'usage_metadata', None)
+        if not u:
+            return (0, 0)
+        return (getattr(u, 'prompt_token_count', 0) or 0,
+                getattr(u, 'candidates_token_count', 0) or 0)
+
     @api.depends('media_file', 'media_kind', 'media_filename')
     def _compute_audio_player(self):
+        from urllib.parse import quote
         for rec in self:
             if rec.media_kind == 'audio' and rec.media_file and isinstance(rec.id, int):
+                # URL-encode the user-supplied filename so it can't break out of
+                # the src attribute (sanitize=False on this field).
+                fname = quote(rec.media_filename or 'audio', safe='')
                 url = (
                     "/web/content?model=unifix.workorder.job"
-                    f"&id={rec.id}&field=media_file&filename={rec.media_filename or 'audio'}"
+                    f"&id={rec.id}&field=media_file&filename={fname}"
                 )
                 rec.audio_player = (
                     '<audio controls preload="metadata" style="width:100%;max-width:520px" '
@@ -125,9 +189,12 @@ class UnifixWorkorderJob(models.Model):
     # ── Actions ──────────────────────────────────────────────────────────────
 
     def action_process(self):
-        """Manually run processing now (synchronously)."""
+        """Queue the job for the cron worker — never run the AI call inside the
+        web request (avoids proxy/worker timeouts; the cron picks it up shortly)."""
         self.ensure_one()
-        self._process()
+        if self.state in ('processing', 'done', 'cancelled'):
+            raise UserError("This job cannot be queued from its current state.")
+        self.write({'state': 'received', 'error_message': False})
 
     def action_retry(self):
         """Re-queue a failed job. Audio/image re-run from stored media; video
@@ -156,7 +223,7 @@ class UnifixWorkorderJob(models.Model):
         tmp_path = None
         tmp_is_scratch = False  # True when we created a throwaway temp copy
         try:
-            self.write({'state': 'processing'})
+            self.write({'state': 'processing', 'input_tokens': 0, 'output_tokens': 0})
 
             if self.media_kind == 'video':
                 tmp_path = self.tmp_path
@@ -181,6 +248,14 @@ class UnifixWorkorderJob(models.Model):
                     _logger.exception("Video extras (transcript/keyframes) failed for job %s", self.id)
                 self._safe_unlink(self.tmp_path)
                 self.tmp_path = False
+            elif self.media_kind == 'audio':
+                try:
+                    self._store_audio_transcript(tmp_path)
+                except Exception:
+                    _logger.exception("Audio transcript failed for job %s", self.id)
+                self._compress_media_safe(tmp_path)
+            elif self.media_kind == 'image':
+                self._compress_media_safe(tmp_path)
 
             self.write({'state': 'done', 'processed_at': fields.Datetime.now()})
             _logger.info("Unifix job %s (%s) completed", self.id, self.media_kind)
@@ -203,7 +278,7 @@ class UnifixWorkorderJob(models.Model):
         from config import load_document_config
 
         ICP = self.env['ir.config_parameter'].sudo()
-        model_id = ICP.get_param('unifix.gemini_model', 'gemini-2.5-pro')
+        model_id = ICP.get_param('unifix.gemini_model', _DEFAULT_MODEL)
 
         mode = {'image': 'image', 'video': 'video'}.get(self.media_kind, 'audio')
         cfg_name = 'image_v3' if mode == 'image' else 'audio_v1'
@@ -220,39 +295,38 @@ class UnifixWorkorderJob(models.Model):
             serialize=False,                                   # Odoo keeps the envelope, not a file
             safe_root=os.path.dirname(os.path.abspath(media_path)),
         )
-        return get_pipeline(mode, cfg, provider).run(ctx)
+        # Bind this env so the engine's prompt/schema loader serves the editable
+        # DB copies (unifix.ai.prompt / unifix.ai.schema) with file fallback.
+        from .ai_prompt import bind_resolver_env
+        with bind_resolver_env(self.env):
+            return get_pipeline(mode, cfg, provider).run(ctx)
 
     def _apply_envelope(self, envelope):
         """Map the engine's returned envelope onto this record's fields."""
         ed = envelope.get('extracted_data', {}) or {}
         self.extracted_json = json.dumps(ed, ensure_ascii=False, indent=2)
         val = envelope.get('validation')
-        self.validation_status = (val or {}).get('overall_status') if isinstance(val, dict) else False
+        if isinstance(val, dict):
+            self.validation_status = val.get('overall_status')
+            self.validation_json = json.dumps(
+                val.get('fields') or {}, ensure_ascii=False, indent=2)
+        else:
+            self.validation_status = False
+            self.validation_json = False
+        u = envelope.get('usage') or {}
+        self._add_usage(u.get('prompt_tokens'), u.get('response_tokens'))
         if self.media_kind == 'image':
             self._apply_image(ed)
         else:
             self._apply_workorder_flat(ed)
 
-    def _apply_workorder_flat(self, ed):
-        """Audio/video — flat schema-v1 fields."""
-        self.write({
-            'worker_name': ed.get('worker', ''),
-            'company': ed.get('company', ''),
-            'location': ed.get('location', ''),
-            'vehicle_equipment': ed.get('vehicle_equipment', ''),
-            'reported_problem': ed.get('reported_problem', ''),
-            'diagnosis_cause': ed.get('diagnosis_cause', ''),
-            'work_performed': ed.get('work_performed', ''),
-            'parts_used': ed.get('parts_used', ''),
-            'start_time': ed.get('start_time', ''),
-            'end_time': ed.get('end_time', ''),
-            'total_time_spent': ed.get('total_time_spent', ''),
-            'future_recommendations': ed.get('future_recommendations', ''),
-            'remaining_tasks': ed.get('remaining_tasks', ''),
-        })
+    def _apply_header(self, ed):
+        """Shared header block — one mapping for every kind.
 
-    def _apply_image(self, ed):
-        """Image — nested schema-v3: header + tasks child rows + JSON extras."""
+        worker / company / client / location / date + the follow-up notes are
+        common to schema v1 (audio/video) and v3 (image), so both routes go
+        through here instead of each mapping the overlap its own way.
+        """
         self.write({
             'worker_name': ed.get('worker') or '',
             'company': ed.get('company') or '',
@@ -261,6 +335,26 @@ class UnifixWorkorderJob(models.Model):
             'wo_date': ed.get('date') or '',
             'future_recommendations': ed.get('future_recommendations') or '',
             'remaining_tasks': ed.get('remaining_tasks') or '',
+        })
+
+    def _apply_workorder_flat(self, ed):
+        """Audio/video — shared header + flat schema-v1 body."""
+        self._apply_header(ed)
+        self.write({
+            'vehicle_equipment': ed.get('vehicle_equipment') or '',
+            'reported_problem': ed.get('reported_problem') or '',
+            'diagnosis_cause': ed.get('diagnosis_cause') or '',
+            'work_performed': ed.get('work_performed') or '',
+            'parts_used': ed.get('parts_used') or '',
+            'start_time': ed.get('start_time') or '',
+            'end_time': ed.get('end_time') or '',
+            'total_time_spent': ed.get('total_time_spent') or '',
+        })
+
+    def _apply_image(self, ed):
+        """Image — shared header + nested schema-v3 body (task rows + JSON extras)."""
+        self._apply_header(ed)
+        self.write({
             'extra_data_json': json.dumps({
                 'travel': ed.get('travel'),
                 'expenses': ed.get('expenses'),
@@ -333,85 +427,80 @@ class UnifixWorkorderJob(models.Model):
         from db.memory import InMemoryProvider
         return InMemoryProvider()
 
-    # ── Keyframe extraction (video only) ─────────────────────────────────────
-    #
-    # Strategy: Gemini returns timestamps + captions for show-and-tell moments
-    # from the AUDIO (no video tokens); we treat those as candidates, then use
-    # OpenCV to pick the sharpest, well-exposed frame in a window around each
-    # (absorbing timestamp drift + say→show lag), de-duplicate, cap, and compress
-    # only the survivors. Stills are stored as captioned unifix.video.keyframe
-    # records (shown in the Frames tab). Pure-local selection — no video to Gemini.
-
-    _KF_WINDOW_BEFORE = 0.3      # seconds before the cue to start scanning
-    _KF_WINDOW_AFTER = 1.5       # seconds after the cue (bias toward the "show")
-    _KF_MAX_SCAN = 60            # max frames decoded per candidate
-    _KF_DEDUP_DISTANCE = 10      # aHash Hamming distance below which frames dup
-    _KF_MIN_BRIGHT = 25
-    _KF_MAX_BRIGHT = 235
+    # ── Video extras: transcript + segments + keyframes ──────────────────────
+    # OpenCV keyframe selection lives in processor.keyframes.KeyframeExtractor;
+    # this model only calls Gemini for cues/transcript and persists the results.
 
     def _keyframes_enabled(self):
         val = self.env['ir.config_parameter'].sudo().get_param('unifix.enable_keyframes', 'True')
         return str(val).strip().lower() in ('1', 'true', 'yes', 'on')
 
     def _process_video_extras(self, video_path):
-        """One audio pass → transcript + segments + keyframe cues; then extract
-        sharp, deduped, captioned keyframes. No video tokens, video not stored."""
+        """Per the selected keyframe mode, get transcript + cues, choose the
+        frames, and store keyframe + matching segment 1:1 (same timestamp) so
+        each segment is verifiable against its frame. Best-effort.
+
+          * audio_cues   — cues from audio; sharpest/well-exposed frame per cue.
+          * verified     — cues from audio; CV proposes candidates, one Gemini
+                           image call picks the frame that shows the object.
+          * gemini_video — Gemini watches the whole video and picks the moments
+                           (duration-priced); a tight CV window grabs the frame.
+        """
         if not self._keyframes_enabled():
             return
-        import cv2
+        from processor.keyframes import KeyframeExtractor
 
         ICP = self.env['ir.config_parameter'].sudo()
         max_kf = int(ICP.get_param('unifix.max_keyframes', '8'))
+        mode = self._keyframe_mode()
 
-        # 1) Single Gemini audio call: transcript, segments, and keyframe cues.
-        analysis = self._gemini_video_analysis(video_path)
-        self._store_transcript_segments(analysis)
-        cues = analysis.get('cues') or []
+        if mode == 'gemini_video':
+            analysis = self._gemini_full_video_analysis(video_path)
+            cues = analysis.get('cues') or []
+            kept = KeyframeExtractor(window_before=0.2, window_after=0.5).extract(
+                video_path, cues, max_kf)
+        else:
+            analysis = self._gemini_video_analysis(video_path)   # audio-only cues
+            cues = analysis.get('cues') or []
+            if mode == 'verified':
+                kept = self._verified_keyframes(video_path, cues, max_kf)
+            else:                                                # 'audio_cues'
+                kept = KeyframeExtractor().extract(video_path, cues, max_kf)
 
-        cap = cv2.VideoCapture(video_path)
-        if not cap.isOpened():
-            _logger.warning("Job %s: cannot open video for keyframes", self.id)
-            return
-        try:
-            fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
-            frames_n = cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0
-            duration = (frames_n / fps) if fps else 0.0
+        self.transcript = (analysis.get('transcript') or '').strip() or False
+        self._store_keyframes_and_segments(kept)
+        _logger.info("Job %s: %d keyframes/segments (mode=%s, %d cues)",
+                     self.id, len(kept), mode, len(cues))
 
-            candidates = self._candidate_timestamps(cues, duration)
-            picked = []
-            for t, caption in candidates:
-                best = self._grab_best_frame(cap, t)
-                if best is not None:
-                    picked.append((t, caption, best))   # best = (sharpness, frame)
-        finally:
-            cap.release()
-
-        keyframes = self._dedupe_and_cap(picked, max_kf)     # -> [(t, caption, jpeg_bytes)]
-        self._store_keyframes(keyframes)
-        self._link_keyframes_to_segments()
-        _logger.info("Job %s: %d keyframes, %d segments (%d cues, %d candidates)",
-                     self.id, len(keyframes), len(self.segment_ids),
-                     len(cues), len(candidates))
+    def _keyframe_mode(self):
+        """Per-job mode, falling back to the global config default."""
+        return (self.video_keyframe_mode
+                or self.env['ir.config_parameter'].sudo().get_param(
+                    'unifix.video_keyframe_mode', 'verified'))
 
     def _gemini_video_analysis(self, video_path):
-        """One Gemini audio pass → {transcript, segments, cues}. No video tokens."""
+        """One Gemini audio pass → {transcript, cues:[(t, caption, text)]}.
+
+        Each cue is a show-and-tell moment; its ``text`` is what the technician
+        says there, so the matching keyframe + segment can be cross-checked.
+        Operates on the AUDIO only — no video tokens.
+        """
         from processor.video_extractor import extract_audio_from_video
         from processor.gemini_client import call_gemini_with_retry
         from processor.parser import parse_ai_json
 
         ICP = self.env['ir.config_parameter'].sudo()
-        model_id = ICP.get_param('unifix.gemini_model', 'gemini-2.5-pro')
+        model_id = ICP.get_param('unifix.gemini_model', _DEFAULT_MODEL)
         prompt = (
             "You are reviewing the AUDIO of a field-service technician's walkthrough "
-            "video. Return JSON with three keys:\n"
+            "video. Return JSON with two keys:\n"
             "- \"transcript\": full verbatim transcript of everything spoken.\n"
-            "- \"segments\": array of {\"start\": <sec>, \"end\": <sec>, \"text\": <text>} "
-            "splitting the transcript into logical 5-30 second chunks with accurate times.\n"
-            "- \"cues\": array of {\"t\": <sec>, \"quote\": <short exact phrase>, "
-            "\"caption\": <3-6 word description of the object shown>} for 4-12 moments where "
-            "the technician points out/shows/describes something PHYSICAL (deictic cues like "
-            "'here','this','look at','you can see', or naming a part/component/equipment/"
-            "location), ordered by time.\n"
+            "- \"cues\": array, ordered by time, of the 4-12 moments where the "
+            "technician points out / shows / describes something PHYSICAL they are "
+            "looking at (deictic cues like 'here','this','look at','you can see', or "
+            "naming a part/component/equipment/location). Each cue is {\"t\": <seconds "
+            "from start>, \"caption\": <3-6 word label of the object shown>, \"text\": "
+            "<the sentence(s) the technician says at that moment>}.\n"
             "All times are seconds from the start."
         )
         audio_tmp = None
@@ -419,6 +508,7 @@ class UnifixWorkorderJob(models.Model):
             audio_bytes, audio_mime, audio_tmp = extract_audio_from_video(video_path)
             client = self._gemini_client()
             resp = call_gemini_with_retry(client, model_id, audio_bytes, audio_mime, prompt)
+            self._add_usage(*self._usage_from_response(resp))
             data = parse_ai_json(resp.text)
         except Exception:
             _logger.exception("Job %s: video audio analysis failed", self.id)
@@ -426,135 +516,213 @@ class UnifixWorkorderJob(models.Model):
         finally:
             self._safe_unlink(audio_tmp)
 
+        return {'transcript': data.get('transcript') or '', 'cues': self._parse_cues(data)}
+
+    @staticmethod
+    def _parse_cues(data):
         cues = []
         for c in (data.get('cues') or []):
             try:
                 t = float(c.get('t'))
             except (TypeError, ValueError):
                 continue
-            cues.append((t, (c.get('caption') or c.get('quote') or '').strip()))
-        return {
-            'transcript': data.get('transcript') or '',
-            'segments': data.get('segments') or [],
-            'cues': cues,
-        }
+            cues.append((t, (c.get('caption') or '').strip(), (c.get('text') or '').strip()))
+        return cues
 
-    def _store_transcript_segments(self, analysis):
-        """Persist the transcript and (re)create timestamped segment records."""
-        self.transcript = (analysis.get('transcript') or '').strip() or False
-        Segment = self.env['unifix.video.segment'].sudo()
-        self.segment_ids.sudo().unlink()
-        for i, s in enumerate(analysis.get('segments') or []):
-            text = (s.get('text') or '').strip()
-            if not text:
+    def _gemini_full_video_analysis(self, video_path):
+        """Experiment: send the WHOLE video to Gemini (visual + audio) so it picks
+        the keyframe moments itself. More tokens (video is duration-priced), but
+        Gemini sees the actual frames. Returns {transcript, cues:[(t,caption,text)]}."""
+        import mimetypes
+        from processor.gemini_client import call_gemini_with_retry
+        from processor.parser import parse_ai_json
+
+        model_id = self.env['ir.config_parameter'].sudo().get_param(
+            'unifix.gemini_model', _DEFAULT_MODEL)
+        mime = mimetypes.guess_type(video_path)[0] or 'video/mp4'
+        with open(video_path, 'rb') as f:
+            video_bytes = f.read()
+        prompt = (
+            "You are analysing a field-service technician's walkthrough VIDEO (with "
+            "audio). Return JSON with: \"transcript\" (full verbatim transcript) and "
+            "\"cues\": 4-12 moments, ordered by time, that best show the equipment/work "
+            "being discussed — choose timestamps where the object is clearly VISIBLE and "
+            "in focus in the frame. Each cue is {\"t\": <seconds from start>, \"caption\": "
+            "<3-6 word label of what's shown>, \"text\": <what the technician says then>}."
+        )
+        try:
+            client = self._gemini_client()
+            resp = call_gemini_with_retry(client, model_id, video_bytes, mime, prompt)
+            self._add_usage(*self._usage_from_response(resp))
+            data = parse_ai_json(resp.text)
+        except Exception:
+            _logger.exception("Job %s: full-video analysis failed", self.id)
+            return {}
+        return {'transcript': data.get('transcript') or '', 'cues': self._parse_cues(data)}
+
+    def _verified_keyframes(self, video_path, cues, max_kf):
+        """Option 2: CV proposes candidate frames per cue; one Gemini image call
+        picks the one that actually shows the captioned object (or none). Falls
+        back to the highest-quality CV frame if the verification call fails."""
+        from processor.keyframes import KeyframeExtractor
+        # Wider net than the single-best pick so the AI has real choices and
+        # say↔show lag (either direction) is absorbed.
+        ext = KeyframeExtractor(window_before=0.6, window_after=2.5)
+        per_cue = ext.candidates_per_cue(video_path, cues, k_per_cue=3, max_cues=max_kf)
+        if not per_cue:
+            return []
+        try:
+            chosen = self._gemini_pick_frames(per_cue)   # {cue_index: cand_index | None}
+        except Exception:
+            _logger.exception("Job %s: frame verification failed; using CV best", self.id)
+            chosen = None
+
+        kept = []
+        for i, cue in enumerate(per_cue):
+            cands = cue['candidates']
+            if chosen is None:
+                idx = 0                       # verification failed → best CV frame
+            else:
+                idx = chosen.get(i)           # None/missing → AI saw nothing relevant → drop
+            if idx is None or not (0 <= idx < len(cands)):
                 continue
+            _t_frame, jpg_full, _thumb = cands[idx]
+            kept.append((cue['t'], cue['caption'], cue['text'], jpg_full))
+        return kept[:max_kf]
+
+    def _gemini_pick_frames(self, per_cue):
+        """Send candidate thumbnails + captions; return {cue_index: candidate_index|None}."""
+        from google.genai import types
+        from processor.gemini_client import call_gemini_generic
+        from processor.parser import parse_ai_json
+
+        model_id = self.env['ir.config_parameter'].sudo().get_param(
+            'unifix.gemini_model', _DEFAULT_MODEL)
+        contents = [
+            "You are choosing the best still frame for each labelled moment in a "
+            "field-service walkthrough video. For every CUE below you are given "
+            "candidate frames, indexed from 0. For each cue pick the ONE candidate "
+            "that most clearly shows the object named in the caption AND is in sharp "
+            "focus. If no candidate clearly shows it, use null for that cue.\n"
+            'Return JSON only: {"choices": [{"cue": <int>, "candidate": <int or null>}]}'
+        ]
+        for i, cue in enumerate(per_cue):
+            contents.append(
+                f'\nCUE {i}: "{cue["caption"]}" — spoken: {(cue["text"] or "")[:160]}')
+            for j, (_t, _full, thumb) in enumerate(cue['candidates']):
+                contents.append(f"candidate {j}:")
+                contents.append(types.Part.from_bytes(data=thumb, mime_type='image/jpeg'))
+
+        client = self._gemini_client()
+        resp = call_gemini_generic(
+            client, model_id, contents,
+            types.GenerateContentConfig(response_mime_type="application/json",
+                                        temperature=0.1))
+        self._add_usage(*self._usage_from_response(resp))
+        data = parse_ai_json(resp.text)
+        out = {}
+        for ch in (data.get('choices') or []):
             try:
-                start = float(s.get('start') or 0)
-                end = float(s.get('end') or 0)
+                cue_i = int(ch.get('cue'))
             except (TypeError, ValueError):
-                start = end = 0.0
-            Segment.create({
+                continue
+            cand = ch.get('candidate')
+            out[cue_i] = (int(cand)
+                          if isinstance(cand, (int, float)) and not isinstance(cand, bool)
+                          else None)
+        return out
+
+    def _store_keyframes_and_segments(self, kept):
+        """Create one segment + one keyframe per kept frame, linked 1:1 and sharing
+        the same timestamp — so each segment is verifiable against its frame."""
+        self.segment_ids.sudo().unlink()
+        self.keyframe_ids.sudo().unlink()
+        Segment = self.env['unifix.video.segment'].sudo()
+        Keyframe = self.env['unifix.video.keyframe'].sudo()
+        for i, (t, caption, text, jpg) in enumerate(kept):
+            disp = self._fmt_ts(t)
+            seg = Segment.create({
                 'job_id': self.id,
                 'sequence': (i + 1) * 10,
-                'start_time': start,
-                'end_time': end,
-                'start_time_display': self._fmt_ts(start),
-                'end_time_display': self._fmt_ts(end),
-                'text': text,
+                'start_time': t,
+                'end_time': t,
+                'start_time_display': disp,
+                'end_time_display': disp,
+                'text': text or caption or '(no transcript at this moment)',
             })
-
-    def _link_keyframes_to_segments(self):
-        """Attach each keyframe to the transcript segment nearest its timestamp."""
-        segs = self.segment_ids.sorted('start_time')
-        if not segs:
-            return
-        for kf in self.keyframe_ids:
-            t = kf.timestamp or 0.0
-            nearest = min(segs, key=lambda s: abs((s.start_time or 0.0) - t))
-            kf.sudo().segment_id = nearest.id
-
-    def _candidate_timestamps(self, cues, duration):
-        """Cue timestamps (primary) + uniform-interval fallback if too sparse."""
-        cands = [(t, cap) for (t, cap) in cues if 0 <= t <= (duration or t + 1)]
-        if len(cands) < 3 and duration and duration > 1:
-            n = 5
-            for i in range(1, n + 1):
-                cands.append((duration * i / (n + 1), ''))
-        return sorted(cands, key=lambda x: x[0])
-
-    def _grab_best_frame(self, cap, t):
-        """Return (sharpness, frame) for the sharpest well-exposed frame near t."""
-        import cv2
-        start = max(0.0, t - self._KF_WINDOW_BEFORE)
-        end = t + self._KF_WINDOW_AFTER
-        cap.set(cv2.CAP_PROP_POS_MSEC, start * 1000.0)
-        best = None
-        scanned = 0
-        while scanned < self._KF_MAX_SCAN:
-            pos = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
-            ret, frame = cap.read()
-            if not ret:
-                break
-            scanned += 1
-            if pos > end:
-                break
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            bright = float(gray.mean())
-            if bright < self._KF_MIN_BRIGHT or bright > self._KF_MAX_BRIGHT:
-                continue
-            sharp = cv2.Laplacian(gray, cv2.CV_64F).var()
-            if best is None or sharp > best[0]:
-                best = (sharp, frame.copy())
-        return best
-
-    def _dedupe_and_cap(self, picked, max_kf):
-        """De-duplicate near-identical frames (aHash), cap, return chronological."""
-        import cv2
-        import numpy as np
-
-        def ahash(frame):
-            g = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            g = cv2.resize(g, (8, 8), interpolation=cv2.INTER_AREA)
-            return (g > g.mean()).flatten()
-
-        # Keep the sharpest first so dups resolve to the best frame.
-        picked_sorted = sorted(picked, key=lambda x: x[2][0], reverse=True)
-        hashes, kept = [], []
-        for t, caption, (sharp, frame) in picked_sorted:
-            h = ahash(frame)
-            if any(int(np.count_nonzero(h != hk)) < self._KF_DEDUP_DISTANCE for hk in hashes):
-                continue
-            jpg = self._encode_jpeg(frame)
-            if not jpg:
-                continue
-            hashes.append(h)
-            kept.append((t, caption, jpg))
-            if len(kept) >= max_kf:
-                break
-        return sorted(kept, key=lambda x: x[0])
-
-    def _encode_jpeg(self, frame, max_dim=1280, quality=80):
-        import cv2
-        h, w = frame.shape[:2]
-        scale = min(1.0, max_dim / float(max(h, w) or 1))
-        if scale < 1.0:
-            frame = cv2.resize(frame, (int(w * scale), int(h * scale)),
-                               interpolation=cv2.INTER_AREA)
-        ok, buf = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, quality])
-        return buf.tobytes() if ok else None
-
-    def _store_keyframes(self, keyframes):
-        Keyframe = self.env['unifix.video.keyframe'].sudo()
-        for i, (t, caption, jpg) in enumerate(keyframes):
             Keyframe.create({
                 'job_id': self.id,
+                'segment_id': seg.id,
                 'sequence': (i + 1) * 10,
                 'timestamp': t,
-                'timestamp_display': self._fmt_ts(t),
+                'timestamp_display': disp,
                 'image': base64.b64encode(jpg),
                 'image_filename': f'keyframe_{int(t * 1000):08d}.jpg',
                 'reason': caption or False,
             })
+        # Video keeps no media; "stored" size = the derived keyframe bytes.
+        self.compressed_size = sum(len(jpg) for (_t, _c, _x, jpg) in kept)
+
+    def _store_audio_transcript(self, audio_path):
+        """Transcribe a stored audio file and save it on the job (audio jobs)."""
+        import mimetypes
+        from processor.gemini_client import call_gemini_with_retry
+        from processor.parser import parse_ai_json
+
+        ICP = self.env['ir.config_parameter'].sudo()
+        model_id = ICP.get_param('unifix.gemini_model', _DEFAULT_MODEL)
+        mime = mimetypes.guess_type(self.media_filename or audio_path)[0] or 'audio/wav'
+        with open(audio_path, 'rb') as f:
+            audio_bytes = f.read()
+        prompt = ('Return JSON {"transcript": "<full verbatim transcript of the spoken '
+                  'audio, in the language spoken>"}. Transcribe everything said.')
+        client = self._gemini_client()
+        resp = call_gemini_with_retry(client, model_id, audio_bytes, mime, prompt)
+        self._add_usage(*self._usage_from_response(resp))
+        data = parse_ai_json(resp.text)
+        self.transcript = (data.get('transcript') or '').strip() or False
+
+    # ── Media compression (store the compressed derivative) ──────────────────
+
+    def _compress_media_safe(self, original_path):
+        """Best-effort compression — a storage optimisation must never fail an
+        otherwise-successful job (P0.2)."""
+        try:
+            self._compress_and_store_media(original_path)
+        except Exception:
+            _logger.exception("Media compression failed for job %s (kept original)", self.id)
+            if not self.compressed_size:
+                self.compressed_size = self.source_size or 0
+
+    def _compress_and_store_media(self, original_path):
+        """Compress the stored media (audio→Opus, image→JPEG) and replace
+        media_file with the smaller derivative; record the actual stored size."""
+        from processor import compression
+        ICP = self.env['ir.config_parameter'].sudo()
+        if self.media_kind == 'audio':
+            data = compression.compress_audio_to_opus(
+                original_path, bitrate=ICP.get_param('unifix.audio_opus_bitrate', '24k'))
+            ext = '.opus'
+        elif self.media_kind == 'image':
+            data, ext = compression.compress_image(
+                original_path,
+                max_dim=int(ICP.get_param('unifix.image_max_dim', '2048')),
+                quality=int(ICP.get_param('unifix.image_jpeg_quality', '80')))
+        else:
+            return
+        if not data:
+            # Unsupported / failed → keep the original bytes; no reduction.
+            self.compressed_size = self.source_size or os.path.getsize(original_path)
+            return
+        stem = os.path.splitext(self.media_filename or self.source_filename or 'media')[0]
+        self.write({'media_file': base64.b64encode(data), 'media_filename': stem + ext})
+        # Record the ACTUAL stored size — Odoo may further optimise images on store.
+        self.flush_recordset(['media_file'])
+        att = self.env['ir.attachment'].sudo().search([
+            ('res_model', '=', 'unifix.workorder.job'),
+            ('res_field', '=', 'media_file'),
+            ('res_id', '=', self.id)], limit=1, order='id desc')
+        self.compressed_size = att.file_size if att else len(data)
 
     # ── Helpers ──────────────────────────────────────────────────────────────
 

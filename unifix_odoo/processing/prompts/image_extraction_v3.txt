@@ -57,15 +57,6 @@ CLOSING FIELDS
 8. Return ONLY the JSON object — no preamble, no markdown fences, no explanation.
 </extraction_rules>
 
-<confidence_markers>
-For each of these five fields, also emit a confidence suffix:
-  company, client, worker, location, date
-Format: "field_name__confidence": "HIGH" | "MEDIUM" | "LOW"
-- HIGH   = value was clearly printed or written and unambiguous
-- MEDIUM = value was partially legible or required minor inference
-- LOW    = best guess; handwriting unclear or field not found
-</confidence_markers>
-
 <output_schema>
 {schema_block}
 </output_schema>
@@ -120,12 +111,7 @@ Example 1 — Clean handwritten form (all sections legible):
       }
     ],
     "future_recommendations": null,
-    "remaining_tasks": null,
-    "company__confidence": "HIGH",
-    "client__confidence": "HIGH",
-    "location__confidence": "HIGH",
-    "worker__confidence": "HIGH",
-    "date__confidence": "HIGH"
+    "remaining_tasks": null
   }
 
 Example 2 — Partially illegible form (smudged unit numbers, unclear description):
@@ -158,12 +144,7 @@ Example 2 — Partially illegible form (smudged unit numbers, unclear descriptio
       }
     ],
     "future_recommendations": null,
-    "remaining_tasks": null,
-    "company__confidence": "HIGH",
-    "client__confidence": "HIGH",
-    "location__confidence": "HIGH",
-    "worker__confidence": "LOW",
-    "date__confidence": "HIGH"
+    "remaining_tasks": null
   }
 </few_shot_examples>
 

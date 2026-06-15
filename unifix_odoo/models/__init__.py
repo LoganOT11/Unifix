@@ -1,3 +1,4 @@
+from . import ai_prompt
 from . import workorder_job
 from . import workorder_task
 from . import video_segment
