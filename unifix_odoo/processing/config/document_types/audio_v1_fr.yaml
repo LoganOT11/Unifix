@@ -1,0 +1,43 @@
+document_type: audio
+schema_version: v1_fr
+envelope_version: "1.0"
+prompt: audio_extraction_v2_fr
+schema_format: simplified
+preprocessing_enabled: false
+
+validation:
+  fuzzy_fields:
+    - name: worker
+      weights: {jaro_winkler: 0.40, token_sort_ratio: 0.35, ratio: 0.25}
+      scoring: maximum
+    - name: company
+      weights: {token_set_ratio: 0.40, WRatio: 0.35, partial_ratio: 0.25}
+      scoring: maximum
+    - name: location
+      weights: {partial_ratio: 0.40, token_set_ratio: 0.35, token_sort_ratio: 0.25}
+      scoring: maximum
+    - name: vehicle_equipment
+      weights: {token_set_ratio: 0.40, partial_ratio: 0.30, ratio: 0.30}
+      scoring: maximum
+    - name: parts_used
+      weights: {token_set_ratio: 0.45, WRatio: 0.35, partial_ratio: 0.20}
+      scoring: minimum
+  time_fields: [start_time, end_time, total_time_spent]
+  free_text_fields:
+    - reported_problem
+    - diagnosis_cause
+    - work_performed
+    - future_recommendations
+    - remaining_tasks
+  thresholds:
+    exact: 100
+    high_conf: 85
+    low_conf: 60
+  required_resolved_fields:
+    [worker, company, location, vehicle_equipment, start_time, end_time]
+  review_trigger_fields: [parts_used, total_time_spent]
+
+veracity:
+  enabled: true
+  trigger_statuses: [REVIEW, FAIL]
+  trigger_confidences: [LOW]

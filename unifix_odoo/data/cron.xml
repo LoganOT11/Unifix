@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- Process pending work-order jobs every minute -->
+    <record id="ir_cron_process_workorder_jobs" model="ir.cron">
+        <field name="name">Unifix: Process pending work-order jobs</field>
+        <field name="model_id" ref="model_unifix_workorder_job"/>
+        <field name="state">code</field>
+        <field name="code">
+jobs = env['unifix.workorder.job'].search(
+    [('state', '=', 'received')], order='create_date asc', limit=5)
+for job in jobs:
+    try:
+        job._process()
+        env.cr.commit()
+    except Exception:
+        env.cr.rollback()
+        job.write({'state': 'failed',
+                   'error_message': 'Worker crashed; see server log.',
+                   'retry_count': job.retry_count + 1})
+        env.cr.commit()
+        </field>
+        <field name="interval_number">1</field>
+        <field name="interval_type">minutes</field>
+    </record>
+
+    <!-- Cleanup orphaned temp files every hour -->
+    <record id="ir_cron_cleanup_temp_files" model="ir.cron">
+        <field name="name">Unifix: Cleanup orphaned temp files</field>
+        <field name="model_id" ref="model_unifix_workorder_job"/>
+        <field name="state">code</field>
+        <field name="code">model._cleanup_orphaned_files()</field>
+        <field name="interval_number">1</field>
+        <field name="interval_type">hours</field>
+    </record>
+</odoo>

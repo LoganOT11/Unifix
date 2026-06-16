@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Extraction de Bon de Travail",
+  "description": "Données structurées extraites d'un enregistrement audio de maintenance.",
+  "type": "object",
+  "required": [
+    "vehicle_equipment",
+    "reported_problem",
+    "diagnosis_cause",
+    "work_performed",
+    "parts_used",
+    "start_time",
+    "end_time",
+    "total_time_spent",
+    "future_recommendations",
+    "remaining_tasks",
+    "worker",
+    "company",
+    "location"
+  ],
+  "properties": {
+    "vehicle_equipment":      { "type": "string", "description": "Identifiant ou nom du véhicule ou de l'équipement entretenu" },
+    "reported_problem":       { "type": "string", "description": "Panne ou plainte signalée par l'opérateur" },
+    "diagnosis_cause":        { "type": "string", "description": "Cause profonde identifiée par le technicien" },
+    "work_performed":         { "type": "string", "description": "Description des réparations ou actions effectuées" },
+    "parts_used":             { "type": "string", "description": "Pièces, consommables ou matériaux utilisés (séparés par des virgules)" },
+    "start_time":             { "type": "string", "description": "Heure de début du travail (format HH:MM)" },
+    "end_time":               { "type": "string", "description": "Heure de fin du travail (format HH:MM)" },
+    "total_time_spent":       { "type": "string", "description": "Temps total passé, tel qu'énoncé (ex. : 2h 30m)" },
+    "future_recommendations": { "type": "string", "description": "Actions de suivi ou avertissements recommandés par le technicien" },
+    "remaining_tasks":        { "type": "string", "description": "Travaux reportés à une visite future" },
+    "worker":                 { "type": "string", "description": "Nom complet du technicien" },
+    "company":                { "type": "string", "description": "Nom de la société de maintenance" },
+    "client":                 { "type": "string", "description": "Nom du client ou du compte, tel qu'énoncé" },
+    "location":               { "type": "string", "description": "Lieu où le travail a été effectué" },
+    "date":                   { "type": "string", "description": "Date du bon de travail (format AAAA/MM/JJ si possible)" }
+  }
+}

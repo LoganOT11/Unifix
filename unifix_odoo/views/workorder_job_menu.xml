@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <menuitem
+        id="menu_workorder_root"
+        name="Unifix"
+        sequence="90"/>
+
+    <menuitem
+        id="menu_workorder_jobs"
+        name="Work Order Jobs"
+        parent="menu_workorder_root"
+        action="action_workorder_job"
+        sequence="10"/>
+</odoo>

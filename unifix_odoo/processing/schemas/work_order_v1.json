@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Work Order Extraction",
+  "description": "Structured data extracted from a maintenance audio log.",
+  "type": "object",
+  "required": [
+    "vehicle_equipment",
+    "reported_problem",
+    "diagnosis_cause",
+    "work_performed",
+    "parts_used",
+    "start_time",
+    "end_time",
+    "total_time_spent",
+    "future_recommendations",
+    "remaining_tasks",
+    "worker",
+    "company",
+    "location"
+  ],
+  "properties": {
+    "vehicle_equipment":      { "type": "string" },
+    "reported_problem":       { "type": "string" },
+    "diagnosis_cause":        { "type": "string" },
+    "work_performed":         { "type": "string" },
+    "parts_used":             { "type": "string" },
+    "start_time":             { "type": "string" },
+    "end_time":               { "type": "string" },
+    "total_time_spent":       { "type": "string" },
+    "future_recommendations": { "type": "string" },
+    "remaining_tasks":        { "type": "string" },
+    "worker":                 { "type": "string" },
+    "company":                { "type": "string" },
+    "client":                 { "type": "string" },
+    "location":               { "type": "string" },
+    "date":                   { "type": "string" }
+  }
+}

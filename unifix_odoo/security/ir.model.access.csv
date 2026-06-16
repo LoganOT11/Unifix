@@ -1,0 +1,13 @@
+id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
+access_workorder_job_user,unifix.workorder.job.user,model_unifix_workorder_job,base.group_user,1,1,1,0
+access_workorder_job_manager,unifix.workorder.job.manager,model_unifix_workorder_job,unifix_odoo.group_unifix_manager,1,1,1,1
+access_workorder_task_user,unifix.workorder.task.user,model_unifix_workorder_task,base.group_user,1,0,0,0
+access_workorder_task_manager,unifix.workorder.task.manager,model_unifix_workorder_task,unifix_odoo.group_unifix_manager,1,1,1,1
+access_video_segment_user,unifix.video.segment.user,model_unifix_video_segment,base.group_user,1,0,0,0
+access_video_segment_manager,unifix.video.segment.manager,model_unifix_video_segment,unifix_odoo.group_unifix_manager,1,1,1,1
+access_keyframe_user,unifix.video.keyframe.user,model_unifix_video_keyframe,base.group_user,1,0,0,0
+access_keyframe_manager,unifix.video.keyframe.manager,model_unifix_video_keyframe,unifix_odoo.group_unifix_manager,1,1,1,1
+access_ai_prompt_user,unifix.ai.prompt.user,model_unifix_ai_prompt,base.group_user,1,0,0,0
+access_ai_prompt_manager,unifix.ai.prompt.manager,model_unifix_ai_prompt,unifix_odoo.group_unifix_manager,1,1,1,1
+access_ai_schema_user,unifix.ai.schema.user,model_unifix_ai_schema,base.group_user,1,0,0,0
+access_ai_schema_manager,unifix.ai.schema.manager,model_unifix_ai_schema,unifix_odoo.group_unifix_manager,1,1,1,1
