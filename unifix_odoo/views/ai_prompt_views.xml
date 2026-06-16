@@ -8,6 +8,8 @@
             <list>
                 <field name="name"/>
                 <field name="description"/>
+                <field name="schema_id"/>
+                <field name="applies_to"/>
                 <field name="active" widget="boolean_toggle"/>
                 <field name="write_date"/>
             </list>
@@ -30,11 +32,38 @@
                         <h1><field name="name" placeholder="audio_extraction_v2"/></h1>
                     </div>
                     <group>
-                        <field name="description" placeholder="What this prompt is for"/>
-                        <field name="active"/>
+                        <group>
+                            <field name="description" placeholder="What this prompt is for"/>
+                            <field name="schema_id"
+                                   options="{'no_create': True}"/>
+                            <field name="active"/>
+                        </group>
+                        <group>
+                            <field name="applies_to"/>
+                            <field name="has_schema_block" invisible="1"/>
+                        </group>
                     </group>
-                    <separator string="Template"/>
-                    <field name="body" widget="text" nolabel="1"/>
+                    <div class="alert alert-warning" role="alert"
+                         invisible="not has_schema_block or schema_id">
+                        This prompt contains a <code>{schema_block}</code> placeholder
+                        but no associated schema is linked — extraction will fall back
+                        to the on-disk schema for its document type.
+                    </div>
+                    <notebook>
+                        <page string="Prompt template" name="prompt">
+                            <field name="body" widget="text" nolabel="1"/>
+                        </page>
+                        <page string="Associated schema" name="schema"
+                              invisible="not schema_id">
+                            <div class="text-muted mb-2">
+                                Rendered into this prompt's <code>{schema_block}</code>
+                                and used to validate the output. Edits here save to the
+                                linked schema (<field name="schema_id" readonly="1" nolabel="1" class="oe_inline"/>).
+                            </div>
+                            <field name="schema_body" widget="ace"
+                                   options="{'mode': 'json'}" nolabel="1"/>
+                        </page>
+                    </notebook>
                 </sheet>
                 <chatter/>
             </form>
@@ -60,6 +89,7 @@
             <list>
                 <field name="name"/>
                 <field name="description"/>
+                <field name="applies_to"/>
                 <field name="active" widget="boolean_toggle"/>
                 <field name="write_date"/>
             </list>
@@ -82,8 +112,14 @@
                         <h1><field name="name" placeholder="v1"/></h1>
                     </div>
                     <group>
-                        <field name="description" placeholder="Which document type this schema covers"/>
-                        <field name="active"/>
+                        <group>
+                            <field name="description" placeholder="Which document type this schema covers"/>
+                            <field name="active"/>
+                        </group>
+                        <group>
+                            <field name="applies_to"/>
+                            <field name="prompt_ids" widget="many2many_tags"/>
+                        </group>
                     </group>
                     <separator string="JSON Schema"/>
                     <field name="body" widget="ace" options="{'mode': 'json'}" nolabel="1"/>

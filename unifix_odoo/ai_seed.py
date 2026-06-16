@@ -12,6 +12,34 @@ import os
 _HERE = os.path.dirname(__file__)
 _PROMPTS_DIR = os.path.join(_HERE, "processing", "prompts")
 _SCHEMAS_DIR = os.path.join(_HERE, "processing", "schemas")
+_DOCTYPES_DIR = os.path.join(_HERE, "processing", "config", "document_types")
+
+
+def document_config_map():
+    """Map each engine document config to the prompt/schema it uses.
+
+    Returns a list of ``{"config", "prompt", "schema"}`` dicts read from
+    ``processing/config/document_types/*.yaml``. ``config`` is the file stem
+    (e.g. ``audio_v1``, ``image_v3``) — the precise document type, since several
+    configs can share the same ``document_type`` (audio_v1 / audio_v1_fr). This
+    is the single source of truth for "which prompt embeds which schema".
+    """
+    import yaml
+
+    out = []
+    if not os.path.isdir(_DOCTYPES_DIR):
+        return out
+    for fn in sorted(os.listdir(_DOCTYPES_DIR)):
+        if not fn.endswith((".yaml", ".yml")):
+            continue
+        with open(os.path.join(_DOCTYPES_DIR, fn), "r", encoding="utf-8") as fh:
+            data = yaml.safe_load(fh) or {}
+        out.append({
+            "config": os.path.splitext(fn)[0],
+            "prompt": data.get("prompt"),
+            "schema": data.get("schema_version"),
+        })
+    return out
 
 
 def read_prompt_file(name):
@@ -60,3 +88,13 @@ def seed_ai_records(env):
     for version in _iter_schema_versions():
         if not Schema.search_count([("name", "=", version)]):
             Schema.create({"name": version, "body": read_schema_file(version)})
+
+    # Link each extraction prompt to the schema it embeds, per the engine
+    # document configs. Only fills empty links so manual UI edits are preserved.
+    for entry in document_config_map():
+        if not entry["prompt"] or not entry["schema"]:
+            continue
+        prompt = Prompt.search([("name", "=", entry["prompt"])], limit=1)
+        schema = Schema.search([("name", "=", entry["schema"])], limit=1)
+        if prompt and schema and not prompt.schema_id:
+            prompt.schema_id = schema.id

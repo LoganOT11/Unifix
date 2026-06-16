@@ -49,8 +49,7 @@
                                    invisible="media_kind != 'video'"/>
                             <field name="source_filename"/>
                             <field name="media_file" filename="media_filename"
-                                   string="Audio file"
-                                   invisible="media_kind != 'audio'"/>
+                                   string="Media file"/>
                             <field name="media_filename" invisible="1"/>
                             <field name="size_saving_display" string="Size"/>
                             <field name="source_size_mb" string="Original (MB)"/>
@@ -63,6 +62,8 @@
                             <field name="retry_count"/>
                             <field name="validation_status"/>
                             <field name="token_cost_display" string="Gemini tokens"/>
+                            <field name="prompt_used" invisible="not prompt_used"/>
+                            <field name="schema_used" invisible="not schema_used"/>
                         </group>
                     </group>
                     <notebook>

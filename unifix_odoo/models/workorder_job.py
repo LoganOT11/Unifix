@@ -121,6 +121,14 @@ class UnifixWorkorderJob(models.Model):
     output_tokens = fields.Integer(help="Gemini output (response) tokens")
     token_cost_display = fields.Char(compute='_compute_token_cost')
 
+    # Which editable AI prompt(s)/schema(s) the engine actually used this run.
+    prompt_used = fields.Char(
+        string="Prompt(s) used", readonly=True,
+        help="Prompt template name(s) the engine requested for this job.")
+    schema_used = fields.Char(
+        string="Schema(s) used", readonly=True,
+        help="JSON schema version(s) the engine requested for this job.")
+
     @api.depends('source_size', 'compressed_size')
     def _compute_size_mb(self):
         for rec in self:
@@ -202,9 +210,11 @@ class UnifixWorkorderJob(models.Model):
         self.ensure_one()
         if self.state != 'failed':
             raise UserError("Only failed jobs can be retried.")
-        if self.media_kind == 'video' and (not self.tmp_path or not os.path.exists(self.tmp_path)):
-            raise UserError("The original video has been cleaned up. Please upload again.")
-        if self.media_kind != 'video' and not self.media_file:
+        if self.media_kind == 'video':
+            has_tmp = bool(self.tmp_path and os.path.exists(self.tmp_path))
+            if not has_tmp and not self.media_file:
+                raise UserError("The original video has been cleaned up. Please upload again.")
+        elif not self.media_file:
             raise UserError("No stored media to retry. Please upload again.")
         self.write({'state': 'received', 'error_message': False})
 
@@ -225,12 +235,17 @@ class UnifixWorkorderJob(models.Model):
         try:
             self.write({'state': 'processing', 'input_tokens': 0, 'output_tokens': 0})
 
-            if self.media_kind == 'video':
+            if self.media_kind == 'video' and self.tmp_path and os.path.exists(self.tmp_path):
+                # Streamed to disk by the upload controller — never stored on the record.
                 tmp_path = self.tmp_path
-                if not tmp_path or not os.path.exists(tmp_path):
-                    raise FileNotFoundError(f"Temp video file not found: {tmp_path}")
             else:
+                # Audio/image, or a video created through the backend form: materialise
+                # the stored media to a scratch temp file the engine can read.
                 if not self.media_file:
+                    if self.media_kind == 'video':
+                        raise FileNotFoundError(
+                            "No video to process — the temp file is gone and no media "
+                            "is stored. Please upload again.")
                     raise UserError("No media stored on this job.")
                 tmp_path = self._write_media_to_temp()
                 tmp_is_scratch = True
@@ -248,6 +263,9 @@ class UnifixWorkorderJob(models.Model):
                     _logger.exception("Video extras (transcript/keyframes) failed for job %s", self.id)
                 self._safe_unlink(self.tmp_path)
                 self.tmp_path = False
+                # Video is never persisted — drop any form-uploaded media.
+                if self.media_file:
+                    self.media_file = False
             elif self.media_kind == 'audio':
                 try:
                     self._store_audio_transcript(tmp_path)
@@ -297,9 +315,13 @@ class UnifixWorkorderJob(models.Model):
         )
         # Bind this env so the engine's prompt/schema loader serves the editable
         # DB copies (unifix.ai.prompt / unifix.ai.schema) with file fallback.
-        from .ai_prompt import bind_resolver_env
+        from .ai_prompt import bind_resolver_env, current_usage
         with bind_resolver_env(self.env):
-            return get_pipeline(mode, cfg, provider).run(ctx)
+            envelope = get_pipeline(mode, cfg, provider).run(ctx)
+            used = current_usage() or {}
+            self.prompt_used = ", ".join(used.get('prompt') or []) or False
+            self.schema_used = ", ".join(used.get('schema') or []) or False
+        return envelope
 
     def _apply_envelope(self, envelope):
         """Map the engine's returned envelope onto this record's fields."""
@@ -735,7 +757,7 @@ class UnifixWorkorderJob(models.Model):
         data = base64.b64decode(self.media_file)
         ext = os.path.splitext(self.media_filename or '')[1].lower()
         if not ext:
-            ext = {'audio': '.wav', 'image': '.jpg'}.get(self.media_kind, '')
+            ext = {'audio': '.wav', 'image': '.jpg', 'video': '.mp4'}.get(self.media_kind, '')
         tmp_dir = self._temp_dir()
         os.makedirs(tmp_dir, exist_ok=True)
         fd, path = tempfile.mkstemp(prefix='unifix_', suffix=ext, dir=tmp_dir)

@@ -1,6 +1,6 @@
 {
     "name": "Unifix Work Order Processing",
-    "version": "19.0.3.0.0",
+    "version": "19.0.4.0.0",
     "category": "Services",
     "summary": "AI work-order extraction from audio, image, and video (Gemini)",
     "description": """
