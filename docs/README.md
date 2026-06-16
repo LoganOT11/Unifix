@@ -10,8 +10,3 @@ these explain the shape and the rationale.
 - **[`design-decisions.md`](design-decisions.md)** — the *why*: storage/compression (and the
   measured "compression ≠ token savings" finding), deterministic field confidence, the three
   keyframe modes, editable DB-backed prompts/schemas, and the known-issues roadmap.
-
-> Earlier per-stage planning/investigation drafts (`odoo_*_plan.md`,
-> `odoo-video-pipeline-investigation.md`, `findings-veracity-disambiguation.md`,
-> `media-storage-and-display.md`, `code-review.md`) were consolidated into the two docs
-> above and removed; recover any from git history if the deeper detail is needed.
